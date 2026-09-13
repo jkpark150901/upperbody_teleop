@@ -1,0 +1,51 @@
+# Teleoperation config shared by scripts/teleop_sender.py (device PC) and
+# mujoco_teleop/teleop_receiver_viewer.py (MuJoCo PC). Copy/edit per machine
+# as needed -- network addresses in particular will differ between the two
+# PCs described in plan section 5.
+
+network:
+  # Device PC (this file, sender side) sends to the MuJoCo PC's listen address.
+  target_ip: "127.0.0.1"       # MuJoCo PC's IP -- set to its real LAN address
+  target_port: 8830
+
+  # MuJoCo PC (receiver side) binds this locally. 0.0.0.0 = all interfaces.
+  listen_ip: "0.0.0.0"
+  listen_port: 8830
+
+control_rate_hz: 90            # plan section 14, Phase 3: "50 ~ 100 Hz control"
+
+# --- retargeting (plan section 7) ---------------------------------------
+
+workspace_scale: 0.7            # S
+
+# Human -> robot/world frame alignment, extrinsic XYZ euler degrees.
+# Identity for now (PN and MuJoCo world axes assumed aligned); adjust once
+# Axis Studio's coordinate convention is confirmed against MuJoCo's.
+align_euler_deg: [0.0, 0.0, 0.0]
+
+# Where the chest axis triad is drawn (fixed anchor; only orientation is
+# taken from the live PN chest pose -- see teleop_receiver_viewer.py).
+chest_view_origin: [0.0, 0.0, 1.4]
+
+sides:
+  left:
+    marker_origin: [0.25, 0.25, 1.0]      # p_robot0 (plan 7.2) -- swap for real EE pose once URDF exists
+    offset_euler_deg: [0.0, 0.0, 0.0]     # R_offset (plan 7.3)
+  right:
+    marker_origin: [0.25, -0.25, 1.0]
+    offset_euler_deg: [0.0, 0.0, 0.0]
+
+clamp:
+  xyz_min: [-0.4, -0.6, 0.4]
+  xyz_max: [0.7, 0.6, 1.8]
+
+max_linear_velocity: 1.5        # m/s, clamps target pose step per tick (plan 7.4)
+
+# --- device backends ------------------------------------------------------
+
+pn:
+  mode: mock                    # mock | mocapapi
+  udp_port: 7009                # Axis Studio BVH/Calc UDP stream port
+
+senseglove:
+  mode: mock                    # mock | sgcore

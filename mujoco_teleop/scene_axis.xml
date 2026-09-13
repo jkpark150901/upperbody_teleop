@@ -1,0 +1,45 @@
+<mujoco model="teleop_axis_preview">
+  <!--
+    Deliberately empty of any robot body: URDF/robot model comes later
+    (see plan section 14, Phase 4/5). For now this is just a ground plane +
+    lighting so wrist/chest axis triads and hand-joint points, drawn as
+    custom mjvScene geoms each frame (mujoco_teleop/markers.py), have
+    something to be seen against.
+  -->
+  <option gravity="0 0 -9.81" />
+
+  <!--
+    Without this, MuJoCo's auto-computed default camera frames on the
+    static model extent alone (here: just the small floor plane) and ends
+    up pitched almost straight down from far above -- chest/wrist-height
+    markers (~1-1.4m up), which are added at render time and aren't part
+    of the static model, then fall outside that view and only show up as
+    faint floor shadows/reflections. Centering statistics on chest height
+    makes the default view (both the offscreen Renderer and the
+    interactive passive viewer) actually look at the workspace.
+  -->
+  <statistic center="0 0 1.1" extent="1.4" meansize="0.05" />
+
+  <visual>
+    <headlight ambient="0.4 0.4 0.4" diffuse="0.7 0.7 0.7" specular="0 0 0" />
+    <global offwidth="1280" offheight="720" />
+    <!-- Disable distance haze blending -- it desaturates marker colors
+         (mjRND_HAZE is on by default and washes red/green/blue axis
+         triads toward gray at typical viewing distances). -->
+    <map haze="0" />
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.65 0.75 0.85" rgb2="0.15 0.18 0.22" width="256" height="256" />
+    <texture name="grid" type="2d" builtin="checker" rgb1="0.2 0.2 0.22" rgb2="0.3 0.3 0.32" width="300" height="300" />
+    <material name="grid_mat" texture="grid" texrepeat="6 6" reflectance="0.1" />
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 3" dir="0 0 -1" diffuse="0.8 0.8 0.8" specular="0.2 0.2 0.2" />
+    <geom name="floor" type="plane" size="2 2 0.05" material="grid_mat" />
+
+    <!-- Fixed reference frame at the world origin for visual scale/orientation sanity checks. -->
+    <site name="world_origin" pos="0 0 0.001" size="0.01" rgba="1 1 1 0.5" />
+  </worldbody>
+</mujoco>

@@ -1,0 +1,11 @@
+# Device PC (Perception Neuron + SenseGlove attached, runs scripts/teleop_sender.py
+# and scripts/vedo_local_preview.py). No mujoco/glfw needed here.
+numpy>=1.24
+pyyaml>=6.0
+vedo>=2024.5.2   # scripts/vedo_local_preview.py -- sanity-check device data before wiring up MuJoCo
+
+# --backend real additionally needs, importable as `import MocapApi` / `import SGCore`:
+#   - Noitom MocapApi Python bindings (ships inside the Axis Studio / MocapApi SDK install)
+#   - SenseGlove SGCore Python bindings (ships inside the SenseGlove Software Suite install)
+# Neither is a pip package -- see README.md "Device PC setup" and the docstrings in
+# devices/perception_neuron/pn_reader.py / devices/senseglove/sg_reader.py.

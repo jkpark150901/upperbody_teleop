@@ -1,0 +1,9 @@
+# Combined install, for running both sides on one machine (e.g. the
+# mock-backend loopback test in README.md). For the real two-PC deployment,
+# install requirements-device.txt on the PN/SenseGlove PC and
+# requirements-mujoco.txt on the MuJoCo PC instead -- the device PC doesn't
+# need mujoco/glfw at all.
+mujoco>=3.1.0
+numpy>=1.24
+pyyaml>=6.0
+vedo>=2024.5.2
