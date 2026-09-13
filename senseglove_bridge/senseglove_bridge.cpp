@@ -37,6 +37,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <iostream>
@@ -44,8 +45,11 @@
 #include <string>
 #include <thread>
 
+#include <SenseGlove/Core/DeviceList.hpp>
 #include <SenseGlove/Core/HandLayer.hpp>
 #include <SenseGlove/Core/HandPose.hpp>
+#include <SenseGlove/Core/HapticGlove.hpp>
+#include <SenseGlove/Core/Library.hpp>
 #include <SenseGlove/Core/SenseCom.hpp>
 #include <SenseGlove/Core/Vect3D.hpp>  // HandPose.hpp only forward-declares Vect3D
 
@@ -92,28 +96,54 @@ std::string HandPoseToJson(bool rightHand, const HandPose& pose) {
     return ss.str();
 }
 
-bool EnsureSenseComRunning() {
-    if (SenseCom::ScanningActive()) {
-        return true;
+// Retries forever instead of giving up -- ScanningActive() has been observed
+// to report a transient false even while SenseCom.exe is alive and showing a
+// device list (e.g. right after SenseCom itself was restarted), so a single
+// failed attempt here doesn't mean SenseCom is actually down.
+void WaitForSenseCom() {
+    int attempt = 0;
+    while (!SenseCom::ScanningActive()) {
+        if (attempt == 0) {
+            std::cout << "SenseCom not running yet -- starting it..." << std::endl;
+            if (!SenseCom::StartupSenseCom()) {
+                std::cerr << "Could not start SenseCom via StartupSenseCom() "
+                             "(it may already be running under a different "
+                             "registration) -- will keep polling ScanningActive()."
+                          << std::endl;
+            }
+        }
+        if (attempt > 0 && attempt % 25 == 0) {
+            std::cout << "[diag] still waiting for SenseCom, attempt=" << attempt << std::endl;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        attempt++;
     }
-    std::cout << "SenseCom not running yet -- starting it..." << std::endl;
-    if (!SenseCom::StartupSenseCom()) {
-        std::cerr << "Could not start SenseCom. Make sure it has been run "
-                     "at least once (or start it manually) and try again."
-                  << std::endl;
-        return false;
-    }
-    for (int i = 0; i < 100 && !SenseCom::ScanningActive(); i++) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
-    return SenseCom::ScanningActive();
 }
 
 }  // namespace
 
 int main() {
-    if (!EnsureSenseComRunning()) {
-        return 1;
+    WaitForSenseCom();
+
+    std::cout << "[diag] SGCore::Library::Version()=" << Library::Version()
+              << " BackendVersion()=" << Library::BackendVersion()
+              << " SGConnectVersion()=" << Library::SGConnectVersion() << std::endl;
+    std::cout << "[diag] DeviceList::SenseComRunning()=" << DeviceList::SenseComRunning()
+              << " ActiveDevices()=" << DeviceList::ActiveDevices() << std::endl;
+    std::cout << "[diag] HandLayer::GlovesConnected()=" << HandLayer::GlovesConnected()
+              << " DeviceConnected(left)=" << HandLayer::DeviceConnected(false)
+              << " DeviceConnected(right)=" << HandLayer::DeviceConnected(true) << std::endl;
+    for (const auto& dev : DeviceList::GetDevices()) {
+        std::cout << "[diag] device type=" << SGDevice::ToString(dev->GetDeviceType())
+                  << " id=" << dev->GetDeviceId() << " addr=" << dev->GetAddress()
+                  << " connected=" << dev->IsConnected();
+        auto glove = std::dynamic_pointer_cast<HapticGlove>(dev);
+        if (glove) {
+            std::cout << " isRight=" << glove->IsRight();
+        } else {
+            std::cout << " (not castable to HapticGlove)";
+        }
+        std::cout << std::endl;
     }
 
     WSADATA wsaData;
@@ -151,50 +181,149 @@ int main() {
                  "to connect..."
               << std::endl;
 
-    SOCKET clientSock = accept(listenSock, nullptr, nullptr);
-    if (clientSock == INVALID_SOCKET) {
-        std::cerr << "accept() failed: " << WSAGetLastError() << std::endl;
-        closesocket(listenSock);
-        WSACleanup();
-        return 1;
-    }
-    std::cout << "Client connected. Streaming HandPose at " << kUpdateHz
-              << " Hz. Ctrl+C to stop." << std::endl;
-
     const auto period = std::chrono::duration<double>(1.0 / kUpdateHz);
-    bool clientAlive = true;
+    int tickCount = 0;
 
-    while (clientAlive) {
-        auto tickStart = std::chrono::steady_clock::now();
-
-        for (bool rightHand : {false, true}) {
-            if (!HandLayer::DeviceConnected(rightHand)) {
+    // Outer loop: accept a client, stream until it disconnects (or a
+    // send() fails), then go back to waiting for the next one -- this
+    // process is meant to be left running across repeated Python-side
+    // reconnects (dev iteration, or the sender restarting) rather than
+    // exiting after the first client drops.
+    while (true) {
+        SOCKET clientSock = INVALID_SOCKET;
+        int waitTicks = 0;
+        while (clientSock == INVALID_SOCKET) {
+            fd_set readfds;
+            FD_ZERO(&readfds);
+            FD_SET(listenSock, &readfds);
+            timeval tv{0, 200000};  // 200ms
+            int sel = select(0, &readfds, nullptr, nullptr, &tv);
+            if (sel > 0 && FD_ISSET(listenSock, &readfds)) {
+                clientSock = accept(listenSock, nullptr, nullptr);
+                if (clientSock == INVALID_SOCKET) {
+                    std::cerr << "accept() failed: " << WSAGetLastError()
+                              << " -- retrying" << std::endl;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                }
                 continue;
             }
 
-            HandPose pose;
-            if (!HandLayer::GetHandPose(rightHand, pose)) {
-                continue;
+            // Touch the API so the connection stays warm while idle; discard results.
+            HandPose tmpPose;
+            HandLayer::GetHandPose(false, tmpPose);
+            HandLayer::GetHandPose(true, tmpPose);
+
+            if (waitTicks % 5 == 0) {  // ~1s
+                std::cout << "[diag] waiting for client, tick=" << waitTicks
+                          << " DeviceConnected(left)=" << HandLayer::DeviceConnected(false)
+                          << " DeviceConnected(right)=" << HandLayer::DeviceConnected(true)
+                          << std::endl;
+            }
+            waitTicks++;
+        }
+        std::cout << "Client connected. Streaming HandPose at " << kUpdateHz
+                  << " Hz. Ctrl+C to stop." << std::endl;
+
+        // Wall-clock-gated rate report (every ~2s), NOT tick-count-gated --
+        // if the loop itself is running slower than kUpdateHz (e.g. a
+        // blocking SGCore call), a tick-count-based gate would silently
+        // under-report, hiding exactly the stall this is meant to catch.
+        auto reportWindowStart = std::chrono::steady_clock::now();
+        auto lastDeviceDump = std::chrono::steady_clock::now();
+        int windowTicks = 0;
+        int windowConnected[2] = {0, 0};   // [left, right]
+        int windowPoseOk[2] = {0, 0};
+        int windowSent[2] = {0, 0};
+        double windowMaxTickMs = 0.0;
+        double windowSumTickMs = 0.0;
+
+        bool clientAlive = true;
+        while (clientAlive) {
+            auto tickStart = std::chrono::steady_clock::now();
+
+            for (bool rightHand : {false, true}) {
+                int idx = rightHand ? 1 : 0;
+                // GetHandPose() alone already returns false when the
+                // device isn't connected, so a separate DeviceConnected()
+                // call first was pure overhead -- doubling the per-hand
+                // HandLayer call count for no behavior difference (verified
+                // against real hardware: with both calls present,
+                // pose_ok/sent tracked connected 1:1 in the [rate] log,
+                // meaning DeviceConnected() was never catching anything
+                // GetHandPose() itself didn't already reject). Dropping it
+                // was the cheapest lever on tick_work (measured avg 26-37ms
+                // against a 60Hz/16.7ms budget) without touching behavior.
+                HandPose pose;
+                if (!HandLayer::GetHandPose(rightHand, pose)) {
+                    continue;
+                }
+                windowConnected[idx]++;
+                windowPoseOk[idx]++;
+
+                std::string line = HandPoseToJson(rightHand, pose) + "\n";
+                int sent = send(clientSock, line.c_str(), static_cast<int>(line.size()), 0);
+                if (sent == SOCKET_ERROR) {
+                    std::cerr << "send() failed (client disconnected): "
+                              << WSAGetLastError() << " -- waiting for a new client"
+                              << std::endl;
+                    clientAlive = false;
+                    break;
+                }
+                windowSent[idx]++;
             }
 
-            std::string line = HandPoseToJson(rightHand, pose) + "\n";
-            int sent = send(clientSock, line.c_str(), static_cast<int>(line.size()), 0);
-            if (sent == SOCKET_ERROR) {
-                std::cerr << "send() failed (client likely disconnected): "
-                          << WSAGetLastError() << std::endl;
-                clientAlive = false;
-                break;
+            auto tickWorkElapsed = std::chrono::steady_clock::now() - tickStart;
+            double tickWorkMs = std::chrono::duration<double, std::milli>(tickWorkElapsed).count();
+            windowMaxTickMs = (std::max)(windowMaxTickMs, tickWorkMs);
+            windowSumTickMs += tickWorkMs;
+            windowTicks++;
+            tickCount++;
+
+            auto now = std::chrono::steady_clock::now();
+            double windowS = std::chrono::duration<double>(now - reportWindowStart).count();
+            if (windowS >= 2.0) {
+                double achievedHz = windowTicks / windowS;
+                std::cout << "[rate] achieved=" << achievedHz << " Hz (target=" << kUpdateHz << ") "
+                          << "tick_work: avg=" << (windowSumTickMs / windowTicks) << "ms "
+                          << "max=" << windowMaxTickMs << "ms | "
+                          << "left: connected=" << windowConnected[0] << "/" << windowTicks
+                          << " pose_ok=" << windowPoseOk[0] << " sent=" << windowSent[0] << " | "
+                          << "right: connected=" << windowConnected[1] << "/" << windowTicks
+                          << " pose_ok=" << windowPoseOk[1] << " sent=" << windowSent[1]
+                          << std::endl;
+                reportWindowStart = now;
+                windowTicks = 0;
+                windowConnected[0] = windowConnected[1] = 0;
+                windowPoseOk[0] = windowPoseOk[1] = 0;
+                windowSent[0] = windowSent[1] = 0;
+                windowMaxTickMs = 0.0;
+                windowSumTickMs = 0.0;
+            }
+            if (std::chrono::duration<double>(now - lastDeviceDump).count() >= 10.0) {
+                for (const auto& dev : DeviceList::GetDevices()) {
+                    std::cout << "  [diag] device type=" << SGDevice::ToString(dev->GetDeviceType())
+                              << " id=" << dev->GetDeviceId() << " connected=" << dev->IsConnected();
+                    auto glove = std::dynamic_pointer_cast<HapticGlove>(dev);
+                    if (glove) {
+                        std::cout << " isRight=" << glove->IsRight();
+                    } else {
+                        std::cout << " (not castable to HapticGlove)";
+                    }
+                    std::cout << std::endl;
+                }
+                lastDeviceDump = now;
+            }
+
+            auto elapsed = std::chrono::steady_clock::now() - tickStart;
+            auto remaining = period - elapsed;
+            if (remaining > std::chrono::duration<double>(0)) {
+                std::this_thread::sleep_for(remaining);
             }
         }
 
-        auto elapsed = std::chrono::steady_clock::now() - tickStart;
-        auto remaining = period - elapsed;
-        if (remaining > std::chrono::duration<double>(0)) {
-            std::this_thread::sleep_for(remaining);
-        }
+        closesocket(clientSock);
     }
 
-    closesocket(clientSock);
     closesocket(listenSock);
     WSACleanup();
     return 0;

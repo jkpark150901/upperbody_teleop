@@ -161,6 +161,13 @@ teleop/
   teleop_state.py         PN + SenseGlove -> HumanTeleopState aggregation
   udp_protocol.py         JSON-over-UDP wire format
   calibration.py          recenter + wrist retargeting (plan section 7)
+robot_hand/
+  urdf/dg5f_{left,right}.urdf  DG5F hand only, extracted from rby1_dg5f.urdf
+                               (scripts/extract_hand_urdf.py) -- no arm/torso,
+                               no mesh files (not present in this repo)
+  urdf_fk.py               minimal URDF parser + forward kinematics
+  hand_retarget.py          SenseGlove flexion -> DG5F finger joint angles
+                             (plan section 9, Phase 1 simple mapping)
 mujoco_teleop/
   scene_axis.xml           empty ground-plane scene (no robot body yet)
   markers.py               axis triad / point mjvScene geom helpers
@@ -168,6 +175,10 @@ mujoco_teleop/
 scripts/
   teleop_sender.py          PN + SenseGlove -> UDP (device PC entry point)
   vedo_local_preview.py     local raw-data sanity check, no MuJoCo/UDP (device PC)
+  senseglove_monitor.py     standalone tkinter UI: per-hand connection status
+                             + live finger flexion bars (no MuJoCo/vedo)
+  extract_hand_urdf.py      (re)generates robot_hand/urdf/dg5f_{left,right}.urdf
+  hand_retarget_vedo.py     SenseGlove -> DG5F hand URDF retargeting, vedo skeleton view
   preview_axis_markers.py   offline single-frame PNG smoke test (MuJoCo side)
 configs/teleop.yaml       network + retargeting + backend config
 ```

@@ -252,32 +252,81 @@ class SenseGloveJSONBridgeReader(SenseGloveReaderBase):
     tested (see the sg_reader smoke test / project test suite).
     """
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 8850, timeout: float = 0.05):
+    def __init__(
+        self,
+        host: str = "127.0.0.1",
+        port: int = 8850,
+        timeout: float = 0.05,
+        reconnect_interval: float = 1.0,
+    ):
         self._host = host
         self._port = port
         self._timeout = timeout
+        self._reconnect_interval = reconnect_interval
         self._sock: Optional[socket.socket] = None
         self._buf = b""
+        self._next_reconnect_attempt = 0.0
+        self._ever_connected = False
 
     def connect(self) -> None:
+        """Initial connect: raises if the bridge isn't up yet (fail fast on
+        first use). Once connected, poll() reconnects silently on its own if
+        the link drops later -- see _try_reconnect."""
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(5.0)
         sock.connect((self._host, self._port))
         sock.settimeout(self._timeout)
         self._sock = sock
+        self._buf = b""
+        self._ever_connected = True
+
+    def _try_reconnect(self) -> None:
+        """Best-effort reconnect, rate-limited to _reconnect_interval so a
+        bridge that's still down doesn't get hammered with connect() calls."""
+        now = time.time()
+        if now < self._next_reconnect_attempt:
+            return
+        self._next_reconnect_attempt = now + self._reconnect_interval
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(0.5)
+            sock.connect((self._host, self._port))
+            sock.settimeout(self._timeout)
+            self._sock = sock
+            self._buf = b""
+            print("[senseglove_bridge] reconnected")
+        except OSError:
+            pass  # bridge/SenseCom/glove still down -- retry next interval
 
     def poll(self) -> Tuple[Optional[HandState], Optional[HandState]]:
-        if self._sock is None:
+        if not self._ever_connected:
             raise RuntimeError("call connect() before poll()")
+        if self._sock is None:
+            self._try_reconnect()
+            return None, None
 
         try:
             chunk = self._sock.recv(65536)
             if chunk:
                 self._buf += chunk
+            else:
+                # recv() returning empty means the peer closed the
+                # connection (e.g. senseglove_bridge.exe restarted) --
+                # socket.timeout raises instead of returning b"", so this
+                # unambiguously means "disconnected", not "no data yet".
+                print("[senseglove_bridge] bridge disconnected, will retry")
+                self._sock.close()
+                self._sock = None
+                self._try_reconnect()
+                return None, None
         except socket.timeout:
             pass
         except OSError:
-            pass
+            print("[senseglove_bridge] socket error, will retry")
+            self._sock.close()
+            self._sock = None
+            self._try_reconnect()
+            return None, None
 
         left: Optional[HandState] = None
         right: Optional[HandState] = None
