@@ -102,12 +102,22 @@ class Dg5fHandRetargeter:
                     f"expected 4 revolute joints for finger '{finger}' under "
                     f"prefix '{joint_prefix}', found {len(chain)}: {chain}"
                 )
-        # The 4 capsule-bearing links per finger are exactly the child
-        # links of its 4 chain joints (_1.._4) -- see extract_hand_urdf.py.
+        # The capsule-bearing links used for self-collision checking are
+        # the child links of chain[1:] (_2.._4) -- NOT _1, even though
+        # extract_hand_urdf.py authors a capsule for it too. _1 is each
+        # finger's base ab/adduction-or-opposition joint, always held at
+        # its rest angle regardless of `scale` (see _finger_angles below),
+        # so its link's world pose never changes with flexion -- checking
+        # it can only ever find whatever overlap the DG5F's own rest-pose
+        # base geometry already has with its neighbor's (a wide mounting
+        # block, not a slender bone -- a real per-mesh capsule radius
+        # there routinely exceeds the rest-pose gap between fingers), which
+        # would clamp every finger to 0 immediately rather than reacting to
+        # anything the SenseGlove input actually did.
         # Public: scripts/hand_retarget_vedo.py uses this to find which
         # capsule actors belong to a finger for the collision-clamp color.
         self.capsule_links: Dict[str, List[str]] = {
-            finger: [tree.joints[j].child for j in chain] for finger, chain in self.chains.items()
+            finger: [tree.joints[j].child for j in chain[1:]] for finger, chain in self.chains.items()
         }
         self.last_clamp: Dict[str, FingerClampInfo] = {}
 

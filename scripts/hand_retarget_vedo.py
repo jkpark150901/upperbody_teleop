@@ -3,21 +3,28 @@ visualize the result with vedo. No MuJoCo, no Perception Neuron, no arm --
 just the hand geometry extracted by scripts/extract_hand_urdf.py, driven by
 robot_hand/hand_retarget.py's Phase-1 flexion mapping (plan section 9).
 
-The DG5F's *visual* mesh files aren't in this repo (see
-extract_hand_urdf.py's docstring), but every finger-segment link DOES carry
-a real URDF collision primitive -- the <collision><capsule radius=""
-length=""/></collision> that same script authors and
-robot_hand/hand_retarget.py's self-collision check uses. This viewer draws
-exactly that: each capsule-bearing link is rendered as an actual capsule
-(a Cylinder + two end Spheres, sized from that link's own URDF radius/
-length -- vedo has no single native "capsule" primitive), so what's on
-screen is the robot's own URDF geometry, not an unrelated stand-in
-skeleton. Links with no authored collision (mount/base/palm/tip) fall back
-to a small translucent marker sphere, purely for visual continuity.
+Two render modes (--render):
+  mesh (default) -- every link's actual URDF <visual><mesh> (a .dae under
+    the repo-root dg5f/, loaded by robot_hand/mesh_loader.py), in that
+    part's own material colors. This is the real DG5F geometry, not a
+    stand-in -- heavier to render than capsule mode (see the known-issue
+    Hz note in RUN_GUIDE.md).
+  capsule -- every finger-segment link's <collision><capsule radius=""
+    length=""/></collision> (the same primitive robot_hand/hand_retarget.py's
+    self-collision check uses) drawn as a Cylinder + two end Spheres (vedo
+    has no single native "capsule" primitive). Links with no authored
+    collision (mount/base/palm/tip) fall back to a small translucent
+    marker sphere. Cheaper to render; useful when mesh mode's frame rate
+    is too low to be usable.
+
+In both modes, a finger's links flip to red while
+robot_hand/hand_retarget.py's self-collision avoidance is actively holding
+it back below what SenseGlove asked for.
 
 Usage:
     python scripts/hand_retarget_vedo.py --backend mock
     python scripts/hand_retarget_vedo.py --backend mock --hand right
+    python scripts/hand_retarget_vedo.py --backend mock --render capsule
     python scripts/hand_retarget_vedo.py --backend bridge   # real glove, via senseglove_bridge.exe
 """
 
@@ -43,8 +50,9 @@ from devices.senseglove.sg_reader import (  # noqa: E402
     SGCoreSenseGloveReader,
 )
 from devices.senseglove.sg_types import HandState  # noqa: E402
+from robot_hand import mesh_loader  # noqa: E402
 from robot_hand.hand_retarget import Dg5fHandRetargeter  # noqa: E402
-from robot_hand.urdf_fk import UrdfTree, load_urdf  # noqa: E402
+from robot_hand.urdf_fk import UrdfLink, UrdfTree, load_urdf  # noqa: E402
 from teleop.geometry import Pose, quat_identity  # noqa: E402
 
 _URDF_PATHS = {
@@ -78,22 +86,86 @@ class CapsuleActor:
     does. `set_pose` uses transform.reset() + apply_transform(M) (vedo's
     LinearTransform.concatenate()s by default) to SET an absolute pose
     each call rather than accumulating one.
+
+    Every actor class here (CapsuleActor, MeshActor, MarkerActor) exposes
+    the same three members so HandRig can treat all of a hand's links
+    uniformly: `.actor` (the vedo object to add to the plotter),
+    `.local_origin` (this link's Pose to compose onto its FK world pose
+    before positioning), `.set_pose(Pose)`, and `.set_color(Optional[str])`
+    (None means "back to this part's own resting color").
     """
 
-    def __init__(self, radius: float, length: float, color: str):
+    def __init__(self, radius: float, length: float, color: str, local_origin: Pose):
+        self.color = color
+        self.local_origin = local_origin
         self.cylinder = vedo.Cylinder(r=radius, height=length, axis=(0, 0, 1), c=color)
         self.cap0 = vedo.Sphere(pos=(0, 0, -length / 2.0), r=radius, c=color)
         self.cap1 = vedo.Sphere(pos=(0, 0, length / 2.0), r=radius, c=color)
-        self.assembly = vedo.Assembly([self.cylinder, self.cap0, self.cap1])
+        self.actor = vedo.Assembly([self.cylinder, self.cap0, self.cap1])
 
     def set_pose(self, pose: Pose) -> None:
-        self.assembly.transform.reset()
-        self.assembly.apply_transform(_pose_matrix(pose))
+        self.actor.transform.reset()
+        self.actor.apply_transform(_pose_matrix(pose))
 
-    def set_color(self, color: str) -> None:
-        self.cylinder.c(color)
-        self.cap0.c(color)
-        self.cap1.c(color)
+    def set_color(self, color: Optional[str]) -> None:
+        c = color if color is not None else self.color
+        self.cylinder.c(c)
+        self.cap0.c(c)
+        self.cap1.c(c)
+
+
+class MarkerActor:
+    """Fallback for links with no authored collision/visual geometry: a
+    small translucent marker sphere, purely for visual continuity.
+
+    Wrapped in a single-element vedo.Assembly (like CapsuleActor/MeshActor)
+    rather than calling apply_transform directly on the bare Sphere --
+    vedo's Points.apply_transform mishandles a raw 4x4 ndarray on a plain
+    Mesh/Points object (`not LT` on a multi-element ndarray raises
+    "truth value ... ambiguous"); Assembly.apply_transform doesn't hit
+    that path.
+    """
+
+    def __init__(self, radius: float, color: str, local_origin: Pose):
+        self.color = color
+        self.local_origin = local_origin
+        self.sphere = vedo.Sphere(r=radius, c=color).alpha(0.35)
+        self.actor = vedo.Assembly([self.sphere])
+
+    def set_pose(self, pose: Pose) -> None:
+        self.actor.transform.reset()
+        self.actor.apply_transform(_pose_matrix(pose))
+
+    def set_color(self, color: Optional[str]) -> None:
+        self.sphere.c(color if color is not None else self.color).alpha(0.35)
+
+
+class MeshActor:
+    """This link's real URDF <visual><mesh> (robot_hand/mesh_loader.py),
+    built ONCE and repositioned every frame like CapsuleActor. A .dae can
+    bundle several differently-colored sub-meshes (e.g. the palm), so this
+    keeps each sub-mesh's own (part, original_rgba) to restore after a
+    clamp-color override -- set_color(None) puts every part's own material
+    color back rather than flattening the whole link to one hand color.
+    """
+
+    def __init__(self, urdf_filename: str, local_origin: Pose):
+        self.local_origin = local_origin
+        self.parts = mesh_loader.load_mesh_parts(urdf_filename)
+        for mesh, rgba in self.parts:
+            mesh.color((rgba[0] / 255.0, rgba[1] / 255.0, rgba[2] / 255.0)).alpha(rgba[3] / 255.0)
+        self.actor = vedo.Assembly([mesh for mesh, _ in self.parts])
+
+    def set_pose(self, pose: Pose) -> None:
+        self.actor.transform.reset()
+        self.actor.apply_transform(_pose_matrix(pose))
+
+    def set_color(self, color: Optional[str]) -> None:
+        for mesh, rgba in self.parts:
+            if color is None:
+                mesh.color((rgba[0] / 255.0, rgba[1] / 255.0, rgba[2] / 255.0)).alpha(rgba[3] / 255.0)
+            else:
+                mesh.color(color).alpha(1.0)
 
 
 class HandRig:
@@ -105,63 +177,57 @@ class HandRig:
     the render call itself.
     """
 
-    def __init__(self, side: str, color: str):
+    def __init__(self, side: str, color: str, render_mode: str = "mesh"):
         self.side = side
         self.color = color
+        self.render_mode = render_mode
         self.tree: UrdfTree = load_urdf(str(_URDF_PATHS[side]))
         self.retargeter = Dg5fHandRetargeter(self.tree, _JOINT_PREFIX[side])
         self.root_pose = Pose(_MOUNT_ANCHOR[side], quat_identity())
 
         init_poses = self.link_poses(np.zeros(5))
 
-        # Finger-segment links: real URDF collision capsules.
-        self.capsules: Dict[str, CapsuleActor] = {}
-        for link_name, link in self.tree.links.items():
-            if link.collision_radius > 0.0:
-                self.capsules[link_name] = CapsuleActor(link.collision_radius, link.collision_length, color)
-
-        # Everything else (mount/base/palm/tip): no URDF collision geometry
-        # was authored for these, so they get a plain marker sphere rather
-        # than an invented capsule size.
-        self.markers: Dict[str, "vedo.Sphere"] = {
-            name: vedo.Sphere(pos=init_poses[name].pos, r=0.006, c=color).alpha(0.35)
-            for name in self.tree.links
-            if name not in self.capsules
+        self.link_actors: Dict[str, object] = {
+            name: self._make_actor(link, color) for name, link in self.tree.links.items()
         }
-
         self._reposition(init_poses)
+
+    def _make_actor(self, link: UrdfLink, color: str):
+        if self.render_mode == "mesh" and link.visual_mesh:
+            return MeshActor(link.visual_mesh, link.visual_origin)
+        if link.collision_radius > 0.0:
+            return CapsuleActor(link.collision_radius, link.collision_length, color, link.collision_origin)
+        # Links with no capsule and (in capsule mode) no mesh either --
+        # mount/base/palm/tip -- fall back to a plain marker sphere.
+        return MarkerActor(0.006, color, Pose.identity())
 
     def link_poses(self, flexion: np.ndarray) -> Dict[str, Pose]:
         angles = self.retargeter.retarget(flexion)
         return self.tree.forward_kinematics(angles, self.root_pose)
 
     def actors(self) -> list:
-        actors = list(self.markers.values())
-        for capsule in self.capsules.values():
-            actors.append(capsule.assembly)
-        return actors
+        return [actor.actor for actor in self.link_actors.values()]
 
     def _reposition(self, poses: Dict[str, Pose]) -> None:
-        for link_name, capsule in self.capsules.items():
-            link = self.tree.links[link_name]
-            capsule.set_pose(poses[link_name].compose(link.collision_origin))
-        for link_name, marker in self.markers.items():
-            marker.pos(poses[link_name].pos)
+        for link_name, actor in self.link_actors.items():
+            actor.set_pose(poses[link_name].compose(actor.local_origin))
 
     def update_actors(self, flexion: np.ndarray) -> None:
         poses = self.link_poses(flexion)
         self._reposition(poses)
 
         # Self-collision motion limiting is otherwise invisible (it just
-        # looks like the hand stopped closing) -- flip a finger's capsules
-        # to _CLAMP_COLOR whenever robot_hand.hand_retarget clamped it
-        # below what SenseGlove actually asked for, so it's visible that
-        # the limiter is the reason, not e.g. a stale/stuck reading.
+        # looks like the hand stopped closing) -- flip a finger's links to
+        # _CLAMP_COLOR whenever robot_hand.hand_retarget clamped it below
+        # what SenseGlove actually asked for, so it's visible that the
+        # limiter is the reason, not e.g. a stale/stuck reading. `None`
+        # restores each actor's own resting color (the hand's flat color
+        # for capsule/marker, this part's real material color for mesh).
         for finger, info in self.retargeter.last_clamp.items():
             clamped = info.applied < info.requested - 1e-3
-            color = _CLAMP_COLOR if clamped else self.color
+            color = _CLAMP_COLOR if clamped else None
             for link_name in self.retargeter.capsule_links[finger]:
-                self.capsules[link_name].set_color(color)
+                self.link_actors[link_name].set_color(color)
 
 
 def main():
@@ -170,9 +236,15 @@ def main():
     )
     parser.add_argument("--backend", choices=["mock", "sgcore", "bridge"], default="mock")
     parser.add_argument("--hand", choices=["left", "right", "both"], default="both")
+    parser.add_argument("--render", choices=["mesh", "capsule"], default="mesh")
     parser.add_argument("--bridge-host", default="127.0.0.1")
     parser.add_argument("--bridge-port", type=int, default=8850)
-    parser.add_argument("--hz", type=float, default=30.0, help="visual update rate")
+    parser.add_argument("--hz", type=float, default=30.0, help="poll + retarget tick rate")
+    parser.add_argument(
+        "--render-hz", type=float, default=30.0,
+        help="capped vedo redraw rate, decoupled from --hz so a fast poll loop "
+             "doesn't push every tick into the (expensive) VTK render call",
+    )
     args = parser.parse_args()
 
     if args.backend == "mock":
@@ -184,7 +256,7 @@ def main():
     reader.connect()
 
     sides = ["left", "right"] if args.hand == "both" else [args.hand]
-    rigs = {side: HandRig(side, _HAND_COLOR[side]) for side in sides}
+    rigs = {side: HandRig(side, _HAND_COLOR[side], args.render) for side in sides}
     last_hand: Dict[str, HandState] = {}
 
     plotter = vedo.Plotter(title="SenseGlove -> DG5F hand retargeting (vedo)", bg="white", axes=4)
@@ -192,10 +264,12 @@ def main():
     for rig in rigs.values():
         plotter.add(rig.actors())
 
+    render_interval = 1.0 / args.render_hz
     state = {
         "n_frames": 0,
         "last_tick": None, "last_report": time.perf_counter(),
         "sum_dt": 0.0, "sum_compute": 0.0, "sum_render": 0.0, "n_since_report": 0,
+        "last_render": 0.0, "n_rendered": 0,
     }
 
     def update(_evt):
@@ -219,7 +293,15 @@ def main():
             n_actors += len(rigs[side].actors())
         t1 = time.perf_counter()
 
-        plotter.render()
+        # plotter.render() is the expensive VTK draw call (confirmed by the
+        # render= timing below) — gate it to render_hz independent of the
+        # poll/retarget tick rate, same fix as the mocap hand raw plot: don't
+        # push every tick into the renderer, the eye can't tell the
+        # difference above ~30Hz anyway.
+        if t1 - state["last_render"] >= render_interval:
+            plotter.render()
+            state["last_render"] = t1
+            state["n_rendered"] += 1
         t2 = time.perf_counter()
 
         state["sum_compute"] += t1 - t0
@@ -230,17 +312,22 @@ def main():
         if now - state["last_report"] > 2.0:
             n = state["n_since_report"]
             achieved_hz = n / (now - state["last_report"])
+            render_hz = state["n_rendered"] / (now - state["last_report"])
             print(
-                f"[hand_retarget_vedo] achieved={achieved_hz:.1f} Hz (target={args.hz:.0f}) "
+                f"[hand_retarget_vedo] poll={achieved_hz:.1f} Hz (target={args.hz:.0f}) "
+                f"render={render_hz:.1f} Hz (target={args.render_hz:.0f}) "
                 f"compute={1000 * state['sum_compute'] / n:.2f} ms/frame "
-                f"render={1000 * state['sum_render'] / n:.2f} ms/frame "
+                f"render_cost={1000 * state['sum_render'] / n:.2f} ms/frame "
                 f"n_actors={n_actors}"
             )
             state["last_report"] = now
             state["sum_compute"] = state["sum_render"] = 0.0
-            state["n_since_report"] = 0
+            state["n_since_report"] = state["n_rendered"] = 0
 
-    print(f"[hand_retarget_vedo] backend={args.backend} hand={args.hand} -- close the window to stop")
+    print(
+        f"[hand_retarget_vedo] backend={args.backend} hand={args.hand} render={args.render} "
+        "-- close the window to stop"
+    )
     plotter.add_callback("timer", update)
     plotter.timer_callback("create", dt=int(1000.0 / args.hz))
     plotter.show(interactive=True)
