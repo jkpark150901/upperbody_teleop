@@ -31,6 +31,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import pathlib
 import sys
@@ -54,6 +55,7 @@ from devices.quest_hand.quest_hand_reader import (  # noqa: E402
 )
 from devices.quest_hand.quest_hand_synth import synthetic_xr_hand  # noqa: E402
 from devices.senseglove.sg_types import FINGER_NAMES, HandState  # noqa: E402
+from robot_hand.anydex_retarget import AnyDexDg5fRetargeter  # noqa: E402
 from scripts.hand_retarget_vedo import (  # noqa: E402
     _HAND_COLOR,
     _JOINT_PREFIX,
@@ -201,6 +203,86 @@ class MockQuestHandSource:
         pass
 
 
+def _array_or_none(value):
+    if value is None:
+        return None
+    return np.asarray(value, dtype=float).tolist()
+
+
+class QuestHandRecorder:
+    """JSONL recorder for the hand-retarget debug UI.
+
+    Each frame stores the raw Quest/OpenXR skeleton, the compact HandState
+    fields, the extracted human-angle features, and the DG5F joint angles
+    that were actually shown by the UI. That makes recordings useful both
+    for offline retarget tuning and for checking one suspicious live frame.
+    """
+
+    FORMAT = "quest_dg5f_hand_v1"
+
+    def __init__(self, path: pathlib.Path, sides: list[str], backend: str, render: str):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.path = path
+        self.file = open(path, "w", encoding="utf-8")
+        self.t0: Optional[float] = None
+        self.frames_written = 0
+        header = {
+            "type": "header",
+            "format": self.FORMAT,
+            "backend": backend,
+            "render": render,
+            "sides": sides,
+            "finger_names": list(FINGER_NAMES),
+            "skeleton_labels": {str(k): v for k, v in sorted(_SKELETON_LABELS.items())},
+        }
+        json.dump(header, self.file)
+        self.file.write("\n")
+        self.file.flush()
+
+    def write_frame(self, samples: Dict[str, HandState], rigs: Dict[str, HandRig]) -> None:
+        now = time.monotonic()
+        if self.t0 is None:
+            self.t0 = now
+
+        hands = {}
+        for side, hs in samples.items():
+            raw = hs.raw or {}
+            rig = rigs[side]
+            xr_joints = raw.get("xr_joints")
+            human_angles = None
+            if xr_joints is not None:
+                try:
+                    human_angles = rig.retargeter._quest_human_angles(xr_joints)
+                except Exception as exc:
+                    human_angles = {"error": str(exc)}
+            hands[side] = {
+                "timestamp": float(hs.timestamp),
+                "source": raw.get("source", "unknown"),
+                "flexion": _array_or_none(hs.flexion),
+                "spread": _array_or_none(raw.get("spread")),
+                "joint_positions": _array_or_none(hs.joint_positions),
+                "xr_joints": _array_or_none(xr_joints),
+                "human_angles": human_angles,
+                "dg5f_angles": {name: float(value) for name, value in sorted(rig.last_angles.items())},
+            }
+
+        record = {
+            "type": "frame",
+            "t": now - self.t0,
+            "wall_time": time.time(),
+            "hands": hands,
+        }
+        json.dump(record, self.file)
+        self.file.write("\n")
+        self.file.flush()
+        self.frames_written += 1
+
+    def close(self) -> None:
+        if not self.file.closed:
+            self.file.close()
+        print(f"[quest_hand_vedo] recorded {self.frames_written} frames -> {self.path}")
+
+
 class SkeletonRig:
     """The raw 26-joint OpenXR hand as points + bone lines, recentered onto
     a fixed on-screen anchor (translate only -- see module docstring on why
@@ -265,6 +347,10 @@ class SkeletonRig:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--backend", choices=("mock", "quest"), default="mock")
+    parser.add_argument(
+        "--retargeter", choices=("analytic", "anydex"), default="analytic",
+        help="DG5F retarget backend: local joint-angle mapping or AnyDexRetarget optimizer",
+    )
     parser.add_argument("--hand", choices=("left", "right", "both"), default="both")
     parser.add_argument("--render", choices=("mesh", "capsule"), default="capsule")
     parser.add_argument(
@@ -278,6 +364,18 @@ def main() -> None:
         "--render-hz", type=float, default=30.0,
         help="capped vedo redraw rate, decoupled from --hz (see hand_retarget_vedo.py)",
     )
+    parser.add_argument(
+        "--record", type=pathlib.Path, default=None,
+        help="write shown Quest skeleton + DG5F retarget frames to this .jsonl file",
+    )
+    parser.add_argument(
+        "--anydex-config-left", type=pathlib.Path, default=None,
+        help="override AnyDex config for the left DG5F hand",
+    )
+    parser.add_argument(
+        "--anydex-config-right", type=pathlib.Path, default=None,
+        help="override AnyDex config for the right DG5F hand",
+    )
     args = parser.parse_args()
 
     if args.backend == "quest":
@@ -288,6 +386,19 @@ def main() -> None:
 
     sides = ["left", "right"] if args.hand == "both" else [args.hand]
     urdf_rigs = {side: HandRig(side, _HAND_COLOR[side], args.render) for side in sides}
+    anydex_retargeters = {}
+    if args.retargeter == "anydex":
+        config_paths = {"left": args.anydex_config_left, "right": args.anydex_config_right}
+        anydex_retargeters = {
+            side: AnyDexDg5fRetargeter(side, config_paths[side])
+            for side in sides
+        }
+        print("[quest_hand_vedo] retargeter=anydex (AnyDexRetarget KeyVectorOptimizer)")
+        for side, rt in anydex_retargeters.items():
+            print(f"  {side}: config={rt.config_path}")
+            print(f"  {side}: qpos joints={', '.join(rt.joint_names)}")
+    else:
+        print("[quest_hand_vedo] retargeter=analytic (local joint-angle mapping)")
     _print_dg5f_dof_report(urdf_rigs)
     _print_skeleton_label_report()
     skeleton_rigs = {
@@ -295,6 +406,7 @@ def main() -> None:
         for side in sides
     }
     last_hand: Dict[str, HandState] = {}
+    recorder = QuestHandRecorder(args.record, sides, args.backend, args.render) if args.record else None
 
     plotter = vedo.Plotter(
         title="Quest 3 hand tracking: raw skeleton + DG5F URDF (vedo)", bg="white", axes=4
@@ -334,7 +446,10 @@ def main() -> None:
         for side in sides:
             hs = last_hand.get(side)
             flexion = hs.flexion if hs is not None else np.zeros(5)
-            if hs is not None and "xr_joints" in hs.raw:
+            if args.retargeter == "anydex" and hs is not None and "xr_joints" in hs.raw:
+                angles = anydex_retargeters[side].retarget_openxr_joints(hs.raw["xr_joints"])
+                urdf_rigs[side].update_actors_from_angles(angles)
+            elif hs is not None and "xr_joints" in hs.raw:
                 urdf_rigs[side].update_actors_from_openxr_joints(hs.raw["xr_joints"])
             elif hs is not None:
                 urdf_rigs[side].update_actors_from_joint_positions(hs.joint_positions)
@@ -342,11 +457,17 @@ def main() -> None:
                 urdf_rigs[side].update_actors(flexion)
             if hs is not None and "xr_joints" in hs.raw:
                 skeleton_rigs[side].update(hs.raw["xr_joints"], plotter)
+        if recorder is not None:
+            visible_samples = {side: last_hand[side] for side in sides if side in last_hand}
+            if visible_samples:
+                recorder.write_frame(visible_samples, urdf_rigs)
         status_lines = [
             "Quest -> DG5F retarget monitor",
             "skeleton labels: W/PALM, T0..T3, I0..I4, M0..M4, R0..R4, P0..P4",
             "finger  flexion        value  spread q1(rad) q2,q3,q4(rad)",
         ]
+        if recorder is not None:
+            status_lines.append(f"REC {recorder.frames_written} frames -> {recorder.path}")
         for side in sides:
             status_lines.extend(_side_status(side, urdf_rigs[side], last_hand.get(side)))
         status_text.text("\n".join(status_lines))
@@ -379,15 +500,19 @@ def main() -> None:
             state["n_since_report"] = state["n_rendered"] = 0
 
     print(
-        f"[quest_hand_vedo] backend={args.backend} hand={args.hand} render={args.render} "
-        "-- close the window to stop"
+        f"[quest_hand_vedo] backend={args.backend} retargeter={args.retargeter} "
+        f"hand={args.hand} render={args.render} "
+        f"record={args.record} -- close the window to stop"
     )
-    plotter.add_callback("timer", update)
-    plotter.timer_callback("create", dt=int(1000.0 / args.hz))
-    plotter.show(interactive=True)
-
-    reader.close()
-    plotter.close()
+    try:
+        plotter.add_callback("timer", update)
+        plotter.timer_callback("create", dt=int(1000.0 / args.hz))
+        plotter.show(interactive=True)
+    finally:
+        reader.close()
+        if recorder is not None:
+            recorder.close()
+        plotter.close()
 
 
 if __name__ == "__main__":

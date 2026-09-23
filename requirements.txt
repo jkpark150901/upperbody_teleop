@@ -9,3 +9,8 @@ pyyaml>=6.0
 vedo>=2024.5.2
 trimesh>=4.0     # robot_hand/mesh_loader.py -- vedo/VTK can't load the DG5F's .dae visual meshes directly
 pycollada>=0.9   # trimesh's Collada (.dae) reader backend
+
+# Optional Quest/OpenXR -> DG5F optimizer backend (--retargeter anydex /
+# --hand-retargeter anydex). Kept in a separate file so MuJoCo-only installs
+# can stay small.
+-r requirements-anydex.txt

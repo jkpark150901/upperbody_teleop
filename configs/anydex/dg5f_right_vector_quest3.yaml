@@ -1,0 +1,62 @@
+# DG5F right hand - AnyDexRetarget KeyVectorOptimizer for Quest/OpenXR input.
+
+optimizer:
+  type: "KeyVectorOptimizer"
+
+robot:
+  type: "dg5f"
+  urdf_path: "robot_hand/urdf/dg5f_right.urdf"
+  origin_link: "right_hand_rl_dg_palm"
+  tip_links:
+    - "right_hand_rl_dg_1_tip"
+    - "right_hand_rl_dg_2_tip"
+    - "right_hand_rl_dg_3_tip"
+    - "right_hand_rl_dg_4_tip"
+    - "right_hand_rl_dg_5_tip"
+  link1_names:
+    - "right_hand_rl_dg_1_1"
+    - "right_hand_rl_dg_2_1"
+    - "right_hand_rl_dg_3_1"
+    - "right_hand_rl_dg_4_1"
+    - "right_hand_rl_dg_5_1"
+  link3_names:
+    - "right_hand_rl_dg_1_3"
+    - "right_hand_rl_dg_2_3"
+    - "right_hand_rl_dg_3_3"
+    - "right_hand_rl_dg_4_3"
+    - "right_hand_rl_dg_5_3"
+  link4_names:
+    - "right_hand_rl_dg_1_4"
+    - "right_hand_rl_dg_2_4"
+    - "right_hand_rl_dg_3_4"
+    - "right_hand_rl_dg_4_4"
+    - "right_hand_rl_dg_5_4"
+  num_fingers: 5
+  neutral_qpos: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+retarget:
+  huber_delta: 2.0
+  norm_delta: 0.04
+  lp_alpha: 0.35
+
+  key_vectors:
+    - {origin: right_hand_rl_dg_palm, task: right_hand_rl_dg_1_2,   origin_kp: 0, task_kp:  2, scale: 1.0}
+    - {origin: right_hand_rl_dg_palm, task: right_hand_rl_dg_1_3,   origin_kp: 0, task_kp:  3, scale: 1.0}
+    - {origin: right_hand_rl_dg_palm, task: right_hand_rl_dg_1_tip, origin_kp: 0, task_kp:  4, scale: 1.0}
+    - {origin: right_hand_rl_dg_palm, task: right_hand_rl_dg_2_2,   origin_kp: 0, task_kp:  6, scale: 1.0}
+    - {origin: right_hand_rl_dg_palm, task: right_hand_rl_dg_2_3,   origin_kp: 0, task_kp:  7, scale: 1.0}
+    - {origin: right_hand_rl_dg_palm, task: right_hand_rl_dg_2_tip, origin_kp: 0, task_kp:  8, scale: 1.0}
+    - {origin: right_hand_rl_dg_palm, task: right_hand_rl_dg_3_2,   origin_kp: 0, task_kp: 10, scale: 1.0}
+    - {origin: right_hand_rl_dg_palm, task: right_hand_rl_dg_3_3,   origin_kp: 0, task_kp: 11, scale: 1.0}
+    - {origin: right_hand_rl_dg_palm, task: right_hand_rl_dg_3_tip, origin_kp: 0, task_kp: 12, scale: 1.0}
+    - {origin: right_hand_rl_dg_palm, task: right_hand_rl_dg_4_2,   origin_kp: 0, task_kp: 14, scale: 1.0}
+    - {origin: right_hand_rl_dg_palm, task: right_hand_rl_dg_4_3,   origin_kp: 0, task_kp: 15, scale: 1.0}
+    - {origin: right_hand_rl_dg_palm, task: right_hand_rl_dg_4_tip, origin_kp: 0, task_kp: 16, scale: 1.0}
+    - {origin: right_hand_rl_dg_palm, task: right_hand_rl_dg_5_2,   origin_kp: 0, task_kp: 18, scale: 1.0}
+    - {origin: right_hand_rl_dg_palm, task: right_hand_rl_dg_5_3,   origin_kp: 0, task_kp: 19, scale: 1.0}
+    - {origin: right_hand_rl_dg_palm, task: right_hand_rl_dg_5_tip, origin_kp: 0, task_kp: 20, scale: 1.0}
+
+  mediapipe_rotation:
+    x: 0.0
+    y: 0.0
+    z: 0.0

@@ -87,6 +87,7 @@ from robot_hand.upper_body_retarget import (  # noqa: E402
     UpperBodyLandmarks,
 )
 from robot_hand import mesh_loader  # noqa: E402
+from robot_hand.anydex_retarget import AnyDexDg5fRetargeter  # noqa: E402
 from robot_hand.hand_retarget import Dg5fHandRetargeter  # noqa: E402
 from robot_hand.urdf_fk import load_urdf  # noqa: E402
 from teleop.articulation_protocol import ArticulationSender  # noqa: E402
@@ -675,6 +676,18 @@ def main():
              "'none' (default) leaves fingers at rest, unless a --backend replay recording has "
              "its own embedded flexion (see CombinedReplayReader).",
     )
+    parser.add_argument(
+        "--hand-retargeter", choices=("analytic", "anydex"), default="analytic",
+        help="finger retarget backend for Quest hand samples. SenseGlove/mock flexion still uses analytic.",
+    )
+    parser.add_argument(
+        "--anydex-config-left", type=pathlib.Path, default=None,
+        help="override AnyDex config for the left DG5F hand",
+    )
+    parser.add_argument(
+        "--anydex-config-right", type=pathlib.Path, default=None,
+        help="override AnyDex config for the right DG5F hand",
+    )
     parser.add_argument("--hand-bridge-host", default="127.0.0.1")
     parser.add_argument("--hand-bridge-port", type=int, default=8850)
     parser.add_argument(
@@ -754,6 +767,16 @@ def main():
         side: Dg5fHandRetargeter(load_urdf(str(_HAND_URDF_PATHS[side])), prefix)
         for side, prefix in _HAND_JOINT_PREFIX.items()
     }
+    anydex_hand_retargeters = {}
+    if args.hand_retargeter == "anydex":
+        config_paths = {"left": args.anydex_config_left, "right": args.anydex_config_right}
+        anydex_hand_retargeters = {
+            side: AnyDexDg5fRetargeter(side, config_paths[side])
+            for side in ("left", "right")
+        }
+        print("[upper_body] hand_retargeter=anydex (Quest samples only)")
+        for side, rt in anydex_hand_retargeters.items():
+            print(f"  {side}: config={rt.config_path}")
     last_hand: Dict[str, object] = {"left": None, "right": None}
     recorder = CombinedRecorder(args.record) if args.record is not None else None
 
@@ -941,7 +964,9 @@ def main():
         if state["hand_tick"] != state["tick"]:
             angles: Dict[str, float] = {}
             for side, sample in last_hand.items():
-                if _is_quest_hand(sample):
+                if _is_quest_hand(sample) and args.hand_retargeter == "anydex":
+                    angles.update(anydex_hand_retargeters[side].retarget_openxr_joints(sample.raw["xr_joints"]))
+                elif _is_quest_hand(sample):
                     angles.update(hand_retargeters[side].retarget_openxr_joints(sample.raw["xr_joints"]))
                 else:
                     flexion = _hand_flexion(sample)

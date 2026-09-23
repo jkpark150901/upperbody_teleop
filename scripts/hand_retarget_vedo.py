@@ -217,6 +217,10 @@ class HandRig:
         self.last_angles = angles
         return self.tree.forward_kinematics(angles, self.root_pose)
 
+    def link_poses_from_angles(self, angles: Dict[str, float]) -> Dict[str, Pose]:
+        self.last_angles = dict(angles)
+        return self.tree.forward_kinematics(angles, self.root_pose)
+
     def actors(self) -> list:
         return [actor.actor for actor in self.link_actors.values()]
 
@@ -234,6 +238,10 @@ class HandRig:
 
     def update_actors_from_openxr_joints(self, xr_joints: np.ndarray) -> None:
         poses = self.link_poses_from_openxr_joints(xr_joints)
+        self._update_from_poses(poses)
+
+    def update_actors_from_angles(self, angles: Dict[str, float]) -> None:
+        poses = self.link_poses_from_angles(angles)
         self._update_from_poses(poses)
 
     def _update_from_poses(self, poses: Dict[str, Pose]) -> None:

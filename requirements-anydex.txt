@@ -1,0 +1,16 @@
+# AnyDexRetarget backend for Quest/OpenXR -> DG5F retargeting.
+#
+# Used by:
+#   scripts/quest_hand_vedo.py --retargeter anydex
+#   scripts/upper_body_retarget_vedo.py --hand-backend quest --hand-retargeter anydex
+#
+# Notes:
+# - The AnyDexRetarget source itself is vendored at third_party/AnyDexRetarget.
+# - `pin` provides the `pinocchio` Python module on pip. On conda, prefer:
+#     conda install -n drt -c conda-forge pinocchio nlopt
+# - We only use AnyDex's optimizer API here, not its camera/video/MediaPipe
+#   input stack, so opencv-python, mediapipe, matplotlib, mujoco are not
+#   required for this project's Quest UDP path.
+nlopt>=2.7
+pin>=2.6
+scipy>=1.10

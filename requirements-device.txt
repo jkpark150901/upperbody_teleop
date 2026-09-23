@@ -6,6 +6,13 @@ vedo>=2024.5.2   # scripts/vedo_local_preview.py -- sanity-check device data bef
 trimesh>=4.0     # robot_hand/mesh_loader.py -- vedo/VTK can't load the DG5F's .dae visual meshes directly
 pycollada>=0.9   # trimesh's Collada (.dae) reader backend
 
+# Quest/OpenXR -> DG5F AnyDex optimizer backend is optional. Install this on
+# the machine that runs quest_hand_vedo.py or upper_body_retarget_vedo.py when
+# using --retargeter anydex / --hand-retargeter anydex:
+#   pip install -r requirements-anydex.txt
+# or, with conda packages preferred for Pinocchio/NLopt on Windows:
+#   conda install -n drt -c conda-forge pinocchio nlopt
+
 # --backend real additionally needs, importable as `import MocapApi` / `import SGCore`:
 #   - Noitom MocapApi Python bindings (ships inside the Axis Studio / MocapApi SDK install)
 #   - SenseGlove SGCore Python bindings (ships inside the SenseGlove Software Suite install)
