@@ -252,6 +252,8 @@ class SenseGloveJSONBridgeReader(SenseGloveReaderBase):
     tested (see the sg_reader smoke test / project test suite).
     """
 
+    _tag = "senseglove_bridge"  # log prefix; subclasses override
+
     def __init__(
         self,
         host: str = "127.0.0.1",
@@ -294,7 +296,7 @@ class SenseGloveJSONBridgeReader(SenseGloveReaderBase):
             sock.settimeout(self._timeout)
             self._sock = sock
             self._buf = b""
-            print("[senseglove_bridge] reconnected")
+            print(f"[{self._tag}] reconnected")
         except OSError:
             pass  # bridge/SenseCom/glove still down -- retry next interval
 
@@ -314,7 +316,7 @@ class SenseGloveJSONBridgeReader(SenseGloveReaderBase):
                 # connection (e.g. senseglove_bridge.exe restarted) --
                 # socket.timeout raises instead of returning b"", so this
                 # unambiguously means "disconnected", not "no data yet".
-                print("[senseglove_bridge] bridge disconnected, will retry")
+                print(f"[{self._tag}] bridge disconnected, will retry")
                 self._sock.close()
                 self._sock = None
                 self._try_reconnect()
@@ -322,7 +324,7 @@ class SenseGloveJSONBridgeReader(SenseGloveReaderBase):
         except socket.timeout:
             pass
         except OSError:
-            print("[senseglove_bridge] socket error, will retry")
+            print(f"[{self._tag}] socket error, will retry")
             self._sock.close()
             self._sock = None
             self._try_reconnect()
@@ -336,22 +338,28 @@ class SenseGloveJSONBridgeReader(SenseGloveReaderBase):
             if not line:
                 continue
             try:
-                d = json.loads(line)
-                state = HandState(
-                    timestamp=time.time(),
-                    hand=d["hand"],
-                    flexion=np.array(d["flexion"], dtype=float),
-                    joint_positions=np.array(d["joint_positions"], dtype=float),
-                    raw={"source": "bridge"},
-                )
+                state = self._parse(json.loads(line))
             except Exception as e:
-                print(f"[senseglove_bridge] bad line, skipping: {e}")
+                print(f"[{self._tag}] bad line, skipping: {e}")
+                continue
+            if state is None:
                 continue
             if state.hand == "left":
                 left = state
             elif state.hand == "right":
                 right = state
         return left, right
+
+    def _parse(self, d: dict) -> Optional[HandState]:
+        """One decoded JSON line -> HandState (None to drop the line).
+        Subclasses with a different wire format override this."""
+        return HandState(
+            timestamp=time.time(),
+            hand=d["hand"],
+            flexion=np.array(d["flexion"], dtype=float),
+            joint_positions=np.array(d["joint_positions"], dtype=float),
+            raw={"source": "bridge"},
+        )
 
     def close(self) -> None:
         if self._sock is not None:

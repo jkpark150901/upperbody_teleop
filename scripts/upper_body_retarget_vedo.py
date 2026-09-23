@@ -75,6 +75,7 @@ if str(_SDK) not in sys.path:
 import numpy as np  # noqa: E402
 import vedo  # noqa: E402
 
+from devices.quest_hand.quest_hand_reader import QuestHandUDPReader  # noqa: E402
 from devices.senseglove.sg_reader import (  # noqa: E402
     MockSenseGloveReader,
     SenseGloveJSONBridgeReader,
@@ -392,6 +393,27 @@ def _mat_from_list(v) -> Optional[np.ndarray]:
     return None if v is None else np.array(v, dtype=float)
 
 
+def _hand_flexion(sample) -> Optional[np.ndarray]:
+    if sample is None:
+        return None
+    return sample.flexion if hasattr(sample, "flexion") else sample
+
+
+def _hand_spread(sample) -> Optional[np.ndarray]:
+    if sample is None or not hasattr(sample, "raw"):
+        return None
+    return sample.raw.get("spread")
+
+
+def _is_quest_hand(sample) -> bool:
+    return bool(
+        sample is not None
+        and hasattr(sample, "joint_positions")
+        and hasattr(sample, "raw")
+        and sample.raw.get("source") == "quest_hand"
+    )
+
+
 class CombinedRecorder:
     """Writes UpperBodyLandmarks (+ optional per-side SenseGlove flexion)
     frames to a .jsonl file -- this script's own recording format, smaller
@@ -645,14 +667,22 @@ def main():
              "arm is. Off by default -- see RBY1UpperBodyRetargeter.use_bvh_scale.",
     )
     parser.add_argument(
-        "--hand-backend", choices=("none", "mock", "sgcore", "bridge"), default="none",
+        "--hand-backend", choices=("none", "mock", "sgcore", "bridge", "quest"), default="none",
         help="also drive the URDF's DG5F fingers from a SenseGlove reader, live alongside the "
              "arm mocap (see devices/senseglove/sg_reader.py -- same backends as "
-             "hand_retarget_vedo.py). 'none' (default) leaves fingers at rest, unless a "
-             "--backend replay recording has its own embedded flexion (see CombinedReplayReader).",
+             "hand_retarget_vedo.py), or from Quest 3 VR hand tracking streamed over UDP by a "
+             "modified XrHandsFB APK ('quest', see devices/quest_hand/quest_hand_reader.py). "
+             "'none' (default) leaves fingers at rest, unless a --backend replay recording has "
+             "its own embedded flexion (see CombinedReplayReader).",
     )
     parser.add_argument("--hand-bridge-host", default="127.0.0.1")
     parser.add_argument("--hand-bridge-port", type=int, default=8850)
+    parser.add_argument(
+        "--quest-host", default="192.168.8.156",
+        help="local address to bind for the Quest's UDP hand-joint stream (--hand-backend quest) "
+             "-- the actual adapter's IP, not 0.0.0.0 (see QuestHandUDPReader's docstring)",
+    )
+    parser.add_argument("--quest-port", type=int, default=5005)
     parser.add_argument(
         "--record", type=pathlib.Path, default=None,
         help="write every frame (landmarks + rotations + hand flexion, if any) to this .jsonl "
@@ -716,13 +746,15 @@ def main():
         hand_reader = SGCoreSenseGloveReader()
     elif args.hand_backend == "bridge":
         hand_reader = SenseGloveJSONBridgeReader(args.hand_bridge_host, args.hand_bridge_port)
+    elif args.hand_backend == "quest":
+        hand_reader = QuestHandUDPReader(args.quest_host, args.quest_port)
     if hand_reader is not None:
         hand_reader.connect()
     hand_retargeters = {
         side: Dg5fHandRetargeter(load_urdf(str(_HAND_URDF_PATHS[side])), prefix)
         for side, prefix in _HAND_JOINT_PREFIX.items()
     }
-    last_hand: Dict[str, Optional[np.ndarray]] = {"left": None, "right": None}
+    last_hand: Dict[str, object] = {"left": None, "right": None}
     recorder = CombinedRecorder(args.record) if args.record is not None else None
 
     # Articulation stream: joint order = the IK's 18 torso/arm/head joints,
@@ -908,9 +940,13 @@ def main():
         # Once per tick even if both --send and the render want it.
         if state["hand_tick"] != state["tick"]:
             angles: Dict[str, float] = {}
-            for side, flexion in last_hand.items():
-                if flexion is not None:
-                    angles.update(hand_retargeters[side].retarget(flexion))
+            for side, sample in last_hand.items():
+                if _is_quest_hand(sample):
+                    angles.update(hand_retargeters[side].retarget_openxr_joints(sample.raw["xr_joints"]))
+                else:
+                    flexion = _hand_flexion(sample)
+                    if flexion is not None:
+                        angles.update(hand_retargeters[side].retarget(flexion, _hand_spread(sample)))
             state["hand_joints"], state["hand_tick"] = angles, state["tick"]
         return state["hand_joints"]
 
@@ -929,9 +965,9 @@ def main():
         if hand_reader is not None:
             left_hs, right_hs = hand_reader.poll()
             if left_hs is not None:
-                last_hand["left"] = left_hs.flexion
+                last_hand["left"] = left_hs
             if right_hs is not None:
-                last_hand["right"] = right_hs.flexion
+                last_hand["right"] = right_hs
         else:
             # --backend replay with a combined-format recording carries its
             # own per-frame flexion (see CombinedReplayReader) -- only used
@@ -940,7 +976,7 @@ def main():
             if embedded is not None:
                 last_hand = embedded
         if recorder is not None:
-            recorder.write_frame(frame, last_hand)
+            recorder.write_frame(frame, {side: _hand_flexion(sample) for side, sample in last_hand.items()})
         if state["calibrate"]:
             retargeter.calibrate(frame)
             state["calibrate"] = False

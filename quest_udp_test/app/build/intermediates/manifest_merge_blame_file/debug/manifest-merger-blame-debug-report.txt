@@ -1,0 +1,47 @@
+1<?xml version="1.0" encoding="utf-8"?>
+2<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+3    package="com.upperbodyteleop.questudptest"
+4    android:versionCode="1"
+5    android:versionName="1.0" >
+6
+7    <uses-sdk
+8        android:minSdkVersion="26"
+9        android:targetSdkVersion="32" />
+10    <!--
+11       Plain UDP socket usage; no VR/immersive features declared on purpose
+12       so this launches as a normal 2D panel on Quest, sidestepping the
+13       OpenXR session / Guardian / focus complexity XrHandsFB has been
+14       running into (see Meta-OpenXR-SDK/.../XrHandsFB/Src/main.cpp).
+15    -->
+16    <uses-permission android:name="android.permission.INTERNET" />
+16-->D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml:10:3-65
+16-->D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml:10:20-62
+17
+18    <application
+18-->D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml:12:3-25:17
+19        android:allowBackup="false"
+19-->D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml:13:7-34
+20        android:debuggable="true"
+21        android:extractNativeLibs="false"
+22        android:label="Quest UDP Test" >
+22-->D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml:14:7-37
+23        <activity
+23-->D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml:16:5-24:16
+24            android:name="com.upperbodyteleop.questudptest.MainActivity"
+24-->D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml:17:9-37
+25            android:exported="true" >
+25-->D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml:18:9-32
+26            <intent-filter>
+26-->D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml:20:7-23:23
+27                <action android:name="android.intent.action.MAIN" />
+27-->D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml:21:9-61
+27-->D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml:21:17-58
+28
+29                <category android:name="android.intent.category.LAUNCHER" />
+29-->D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml:22:9-69
+29-->D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml:22:19-66
+30            </intent-filter>
+31        </activity>
+32    </application>
+33
+34</manifest>

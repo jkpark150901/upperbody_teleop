@@ -184,6 +184,7 @@ class HandRig:
         self.tree: UrdfTree = load_urdf(str(_URDF_PATHS[side]))
         self.retargeter = Dg5fHandRetargeter(self.tree, _JOINT_PREFIX[side])
         self.root_pose = Pose(_MOUNT_ANCHOR[side], quat_identity())
+        self.last_angles: Dict[str, float] = {}
 
         init_poses = self.link_poses(np.zeros(5))
 
@@ -201,8 +202,19 @@ class HandRig:
         # mount/base/palm/tip -- fall back to a plain marker sphere.
         return MarkerActor(0.006, color, Pose.identity())
 
-    def link_poses(self, flexion: np.ndarray) -> Dict[str, Pose]:
-        angles = self.retargeter.retarget(flexion)
+    def link_poses(self, flexion: np.ndarray, spread: Optional[np.ndarray] = None) -> Dict[str, Pose]:
+        angles = self.retargeter.retarget(flexion, spread)
+        self.last_angles = angles
+        return self.tree.forward_kinematics(angles, self.root_pose)
+
+    def link_poses_from_joint_positions(self, joint_positions: np.ndarray) -> Dict[str, Pose]:
+        angles = self.retargeter.retarget_joint_positions(joint_positions, self.side)
+        self.last_angles = angles
+        return self.tree.forward_kinematics(angles, self.root_pose)
+
+    def link_poses_from_openxr_joints(self, xr_joints: np.ndarray) -> Dict[str, Pose]:
+        angles = self.retargeter.retarget_openxr_joints(xr_joints)
+        self.last_angles = angles
         return self.tree.forward_kinematics(angles, self.root_pose)
 
     def actors(self) -> list:
@@ -212,8 +224,19 @@ class HandRig:
         for link_name, actor in self.link_actors.items():
             actor.set_pose(poses[link_name].compose(actor.local_origin))
 
-    def update_actors(self, flexion: np.ndarray) -> None:
-        poses = self.link_poses(flexion)
+    def update_actors(self, flexion: np.ndarray, spread: Optional[np.ndarray] = None) -> None:
+        poses = self.link_poses(flexion, spread)
+        self._update_from_poses(poses)
+
+    def update_actors_from_joint_positions(self, joint_positions: np.ndarray) -> None:
+        poses = self.link_poses_from_joint_positions(joint_positions)
+        self._update_from_poses(poses)
+
+    def update_actors_from_openxr_joints(self, xr_joints: np.ndarray) -> None:
+        poses = self.link_poses_from_openxr_joints(xr_joints)
+        self._update_from_poses(poses)
+
+    def _update_from_poses(self, poses: Dict[str, Pose]) -> None:
         self._reposition(poses)
 
         # Self-collision motion limiting is otherwise invisible (it just

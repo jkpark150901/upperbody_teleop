@@ -1,0 +1,7 @@
+com.upperbodyteleop.questudptest.app-pngs-0 D:\upperbody_teleop\quest_udp_test\app\build\generated\res\pngs\debug
+com.upperbodyteleop.questudptest.app-resValues-1 D:\upperbody_teleop\quest_udp_test\app\build\generated\res\resValues\debug
+com.upperbodyteleop.questudptest.app-packageDebugResources-2 D:\upperbody_teleop\quest_udp_test\app\build\intermediates\incremental\debug\packageDebugResources\merged.dir
+com.upperbodyteleop.questudptest.app-packageDebugResources-3 D:\upperbody_teleop\quest_udp_test\app\build\intermediates\incremental\debug\packageDebugResources\stripped.dir
+com.upperbodyteleop.questudptest.app-merged_res-4 D:\upperbody_teleop\quest_udp_test\app\build\intermediates\merged_res\debug
+com.upperbodyteleop.questudptest.app-debug-5 D:\upperbody_teleop\quest_udp_test\app\src\debug\res
+com.upperbodyteleop.questudptest.app-main-6 D:\upperbody_teleop\quest_udp_test\app\src\main\res

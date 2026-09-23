@@ -1,0 +1,52 @@
+-- Merging decision tree log ---
+manifest
+ADDED from D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml:2:1-26:12
+INJECTED from D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml:2:1-26:12
+INJECTED from D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml:2:1-26:12
+INJECTED from D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml:2:1-26:12
+	package
+		ADDED from D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml:4:5-47
+		INJECTED from D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml
+	android:versionName
+		INJECTED from D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml
+	android:versionCode
+		INJECTED from D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml
+	xmlns:android
+		ADDED from D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml:3:5-63
+uses-permission#android.permission.INTERNET
+ADDED from D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml:10:3-65
+	android:name
+		ADDED from D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml:10:20-62
+application
+ADDED from D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml:12:3-25:17
+INJECTED from D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml:12:3-25:17
+	android:extractNativeLibs
+		INJECTED from D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml
+	android:label
+		ADDED from D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml:14:7-37
+	android:allowBackup
+		ADDED from D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml:13:7-34
+activity#com.upperbodyteleop.questudptest.MainActivity
+ADDED from D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml:16:5-24:16
+	android:exported
+		ADDED from D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml:18:9-32
+	android:name
+		ADDED from D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml:17:9-37
+intent-filter#action:name:android.intent.action.MAIN+category:name:android.intent.category.LAUNCHER
+ADDED from D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml:20:7-23:23
+action#android.intent.action.MAIN
+ADDED from D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml:21:9-61
+	android:name
+		ADDED from D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml:21:17-58
+category#android.intent.category.LAUNCHER
+ADDED from D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml:22:9-69
+	android:name
+		ADDED from D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml:22:19-66
+uses-sdk
+INJECTED from D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml reason: use-sdk injection requested
+INJECTED from D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml
+INJECTED from D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml
+	android:targetSdkVersion
+		INJECTED from D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml
+	android:minSdkVersion
+		INJECTED from D:\upperbody_teleop\quest_udp_test\app\src\main\AndroidManifest.xml

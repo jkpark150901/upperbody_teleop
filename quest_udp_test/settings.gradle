@@ -1,0 +1,2 @@
+rootProject.name = "quest_udp_test"
+include ':app'
