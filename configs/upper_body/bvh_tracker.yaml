@@ -1,0 +1,52 @@
+# BVH (human) <-> RBY1 upper-body tracker map.
+#
+# Same design pattern as humanoid-retarget's tracker_dict / GMR's
+# ik_match_table: name-to-name pairing of a human mocap joint to a robot
+# link, with a position/orientation weight -- NOT a per-bone local-Euler
+# angle mapping (see bvh_upper_body_mapping.md for why that approach was
+# abandoned). This project's IK itself stays a closed-form analytic solve
+# (robot_hand/upper_body_retarget.py), not humanoid-retarget's generic
+# mink QP task solve -- an earlier DLS/task-weighted version of this IK
+# got stuck in local minima on real targets (see that file's git history),
+# so "weight" here only documents *intent* (which pairs are position-only
+# vs. position+orientation); it is not fed into a continuous cost.
+#
+# human: candidate BVH bone names, first one present in the stream wins
+# (mirrors _MOCAP_NAMES' tuple-of-fallbacks).
+# robot: this project's URDF link name (mirrors ROBOT_LANDMARK_LINKS).
+# orientation: whether this pair also drives an orientation IK block, not
+# just position (only the wrists do, via _solve_wrist_orientation_block).
+
+trackers:
+  chest:
+    human: [Spine3, Spine2, Spine1, Spine]
+    robot: link_torso_5
+    orientation: false
+  head:
+    human: [Head]
+    robot: link_head_2
+    orientation: false  # head yaw/pitch driven separately from head_rotation, not this position tracker
+  left_shoulder:
+    human: [LeftShoulder]
+    robot: link_left_arm_0
+    orientation: false
+  left_elbow:
+    human: [LeftForeArm]
+    robot: link_left_arm_3
+    orientation: false
+  left_wrist:
+    human: [LeftHand]
+    robot: link_left_arm_6
+    orientation: true
+  right_shoulder:
+    human: [RightShoulder]
+    robot: link_right_arm_0
+    orientation: false
+  right_elbow:
+    human: [RightForeArm]
+    robot: link_right_arm_3
+    orientation: false
+  right_wrist:
+    human: [RightHand]
+    robot: link_right_arm_6
+    orientation: true

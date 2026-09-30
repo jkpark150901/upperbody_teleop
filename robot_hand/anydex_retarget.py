@@ -18,8 +18,8 @@ import yaml
 _ROOT = pathlib.Path(__file__).resolve().parent.parent
 _ANYDEX_ROOT = _ROOT / "third_party" / "AnyDexRetarget"
 _DEFAULT_CONFIG = {
-    "left": _ROOT / "configs" / "anydex" / "dg5f_left_vector_quest3.yaml",
-    "right": _ROOT / "configs" / "anydex" / "dg5f_right_vector_quest3.yaml",
+    "left": _ROOT / "configs" / "anydex" / "dg5f_left_adaptive_quest3.yaml",
+    "right": _ROOT / "configs" / "anydex" / "dg5f_right_adaptive_quest3.yaml",
 }
 _SANITIZED_URDF_DIR = _ROOT / "outputs" / "anydex_urdf"
 

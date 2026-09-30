@@ -2,16 +2,34 @@
 
 from __future__ import annotations
 
+import pathlib
 from dataclasses import dataclass
 from typing import Dict, Tuple
 
 import numpy as np
+import yaml
 
 from robot_hand.urdf_fk import UrdfTree
 from teleop.geometry import Pose
 
+# Human BVH bone <-> robot link tracker map, same name-to-name pairing
+# design as humanoid-retarget's tracker_dict / GMR's ik_match_table (see
+# configs/upper_body/bvh_tracker.yaml and bvh_upper_body_mapping.md). This
+# project's IK stays the closed-form analytic solve below, not a generic
+# weighted-task QP solve -- only the *mapping table* is borrowed.
+_TRACKER_CONFIG_PATH = pathlib.Path(__file__).resolve().parent.parent / "configs" / "upper_body" / "bvh_tracker.yaml"
 
-_ROTATION_FIELDS = {"head_rotation", "left_wrist_rotation", "right_wrist_rotation"}
+
+def _load_bvh_tracker_config(path: pathlib.Path = _TRACKER_CONFIG_PATH):
+    with open(path, "r", encoding="utf-8") as f:
+        trackers = yaml.safe_load(f)["trackers"]
+    robot_landmark_links = {key: entry["robot"] for key, entry in trackers.items()}
+    mocap_names = {key: tuple(entry["human"]) for key, entry in trackers.items()}
+    orientation_keys = {key for key, entry in trackers.items() if entry.get("orientation")}
+    return robot_landmark_links, mocap_names, orientation_keys
+
+
+_ROTATION_FIELDS = {"head_rotation", "left_wrist_rotation", "right_wrist_rotation", "bvh_joint_angles"}
 
 
 @dataclass
@@ -32,6 +50,11 @@ class UpperBodyLandmarks:
     # is simply skipped, exactly like the existing head_rotation fallback.
     left_wrist_rotation: np.ndarray | None = None
     right_wrist_rotation: np.ndarray | None = None
+    # Optional approximate robot-joint angle hints derived from BVH local
+    # rotations. These are not written directly to the robot; they bias
+    # IK branch selection so the solved pose keeps the BVH joint direction
+    # where multiple robot configurations reach the same landmarks.
+    bvh_joint_angles: Dict[str, float] | None = None
 
     def as_dict(self) -> Dict[str, np.ndarray]:
         return {
@@ -48,16 +71,35 @@ JOINT_NAMES = (
     "head_0", "head_1",
 )
 
-ROBOT_LANDMARK_LINKS = {
-    "chest": "link_torso_5",
-    "head": "link_head_2",
-    "left_shoulder": "link_left_arm_0",
-    "left_elbow": "link_left_arm_3",
-    "left_wrist": "link_left_arm_6",
-    "right_shoulder": "link_right_arm_0",
-    "right_elbow": "link_right_arm_3",
-    "right_wrist": "link_right_arm_6",
-}
+ROBOT_LANDMARK_LINKS, MOCAP_TRACKER_NAMES, ORIENTATION_TRACKER_KEYS = _load_bvh_tracker_config()
+
+# DG5F palm's orientation relative to link_{side}_arm_6: 180 deg about X,
+# from the left_hand_mount / right_hand_mount fixed joints in the URDF
+# (identical on both sides -- the dg_base/palm joints below the mount add
+# no further rotation, only translation). Self-inverse (a 180 deg rotation
+# undoes itself), so it's used both palm->arm6 and arm6->palm below.
+_HAND_MOUNT_ROTATION = np.array([
+    [1.0, 0.0, 0.0],
+    [0.0, -1.0, 0.0],
+    [0.0, 0.0, -1.0],
+])
+
+# DG5F palm's own local axes (left_hand_ll_dg_palm / right_hand_rl_dg_palm,
+# same convention _quest_forward_reference() in upper_body_retarget_mujoco.py
+# uses): local +Z points toward the fingers, local +X is the back-of-hand
+# normal (dorsal) -- encoded directly as column order in
+# _wrist_rotation_target()'s palm_target construction below.
+
+# BVH/MocapApi's LeftHand/RightHand bone local axes, confirmed on real
+# hardware: dorsal (back of hand) faces local +Y on *both* sides, but
+# fingers flip sign between sides -- RightHand's local -X points along the
+# fingers same as the initial (right-side) check found, but LeftHand's
+# rigging mirrors that component, so LeftHand's fingers direction is local
+# +X instead. (Same kind of left/right local-axis mirroring AnyDexRetarget
+# already has to special-case for other rigs -- see vr_device_dg5f_
+# retargeting.md's KeyVectorOptimizer section.)
+_BVH_HAND_FINGERS_LOCAL = {"left": np.array([1.0, 0.0, 0.0]), "right": np.array([-1.0, 0.0, 0.0])}
+_BVH_HAND_DORSAL_LOCAL = np.array([0.0, -1.0, 0.0])
 
 
 def _unit(v: np.ndarray) -> np.ndarray:
@@ -90,14 +132,7 @@ class RBY1UpperBodyRetargeter:
         self.calibration_pose = "attention"
         self._human_to_robot: np.ndarray | None = None
         self._neutral_head_rotation: np.ndarray | None = None
-        # Same idea as _neutral_head_rotation, one per wrist -- the human
-        # wrist orientation captured at calibrate() time, so later frames
-        # can be expressed as a *delta* from it. _reference_wrist_orientation
-        # is the matching robot-side anchor (this arm's wrist link
-        # orientation at the calibration reference pose), set in
-        # set_calibration_pose() below.
-        self._neutral_wrist_rotation: Dict[str, np.ndarray | None] = {"left": None, "right": None}
-        self._reference_wrist_orientation: Dict[str, np.ndarray] = {}
+        self._neutral_bvh_joint_angles: Dict[str, float] | None = None
         # Last valid (non-degenerate) shoulder-elbow-wrist plane normal per
         # side -- see _solve_arm_position_block's straight-arm fallback.
         self._prev_plane_n: Dict[str, np.ndarray | None] = {"left": None, "right": None}
@@ -112,6 +147,15 @@ class RBY1UpperBodyRetargeter:
         # genuinely unreachable target) -- two different bugs to chase.
         self.last_target: Dict[str, np.ndarray] = {}
         self.last_error_m: Dict[str, float] = {}
+        # Same idea, for _solve_wrist_orientation_block: degrees between the
+        # requested wrist orientation and what the clipped (4,5,6) angles
+        # actually reach. Near 0 means the ZYZ solve is exact and any
+        # "wrong-looking" hand orientation is coming from the target itself
+        # (_wrist_rotation_target()); a large, persistent value means the
+        # target is outside arm_5's asymmetric [-90,+110 deg] (or another
+        # joint's) reachable range and clipping is distorting the result --
+        # two different bugs to chase, same as last_error_m above.
+        self.last_wrist_orientation_error_deg: Dict[str, float] = {}
         # Off by default -- see _extension_ratio()/_measure_human_lengths().
         # When on, each segment's robot-length is scaled by how extended the
         # *human's own* BVH segment currently is relative to its length at
@@ -157,15 +201,8 @@ class RBY1UpperBodyRetargeter:
         self._neutral_robot = self._robot_points(self.reference_q)
         self._human_to_robot = None
         self._neutral_head_rotation = None
-        self._neutral_wrist_rotation = {"left": None, "right": None}
+        self._neutral_bvh_joint_angles = None
         self._prev_plane_n = {"left": None, "right": None}
-        wrist_links = [f"link_{side}_arm_6" for side in ("left", "right")]
-        wrist_poses = self.tree.forward_kinematics(
-            self._values(self.reference_q), self.root_pose, only=wrist_links
-        )
-        self._reference_wrist_orientation = {
-            side: wrist_poses[f"link_{side}_arm_6"].as_matrix() for side in ("left", "right")
-        }
 
     def _values(self, q: np.ndarray) -> Dict[str, float]:
         return dict(zip(self.names, q))
@@ -228,10 +265,7 @@ class RBY1UpperBodyRetargeter:
         self._neutral_head_rotation = (
             None if human.head_rotation is None else np.asarray(human.head_rotation).copy()
         )
-        self._neutral_wrist_rotation = {
-            "left": None if human.left_wrist_rotation is None else np.asarray(human.left_wrist_rotation).copy(),
-            "right": None if human.right_wrist_rotation is None else np.asarray(human.right_wrist_rotation).copy(),
-        }
+        self._neutral_bvh_joint_angles = None if human.bvh_joint_angles is None else dict(human.bvh_joint_angles)
         self._human_reference_lengths = self._measure_human_lengths(h)
         self.q = self.reference_q.copy()
 
@@ -269,12 +303,9 @@ class RBY1UpperBodyRetargeter:
         self._neutral_head_rotation = (
             None if active_frame.head_rotation is None else np.asarray(active_frame.head_rotation).copy()
         )
-        self._neutral_wrist_rotation = {
-            "left": None if active_frame.left_wrist_rotation is None
-            else np.asarray(active_frame.left_wrist_rotation).copy(),
-            "right": None if active_frame.right_wrist_rotation is None
-            else np.asarray(active_frame.right_wrist_rotation).copy(),
-        }
+        self._neutral_bvh_joint_angles = (
+            None if active_frame.bvh_joint_angles is None else dict(active_frame.bvh_joint_angles)
+        )
         per_pose_lengths = [self._measure_human_lengths(human.as_dict()) for human in frames.values()]
         self._human_reference_lengths = {
             key: max(lengths[key] for lengths in per_pose_lengths) for key in per_pose_lengths[0]
@@ -446,7 +477,38 @@ class RBY1UpperBodyRetargeter:
     def _wrap_pi(angle: float) -> float:
         return float((angle + np.pi) % (2 * np.pi) - np.pi)
 
-    def _solve_arm_position_block(self, side: str, target: Dict[str, np.ndarray], q_start: np.ndarray) -> None:
+    def _bvh_joint_prior(self, human: UpperBodyLandmarks | None) -> Dict[str, float] | None:
+        """Approximate robot joint targets from BVH local-angle deltas.
+
+        Used only as a branch/smoothness prior. Landmark positions still
+        define the IK target, so a noisy or structurally-mismatched BVH
+        Euler channel cannot pull the wrist away from the captured pose.
+        """
+        if (
+            human is None
+            or human.bvh_joint_angles is None
+            or self._neutral_bvh_joint_angles is None
+        ):
+            return None
+        prior = {}
+        for name, value in human.bvh_joint_angles.items():
+            if name not in self.names:
+                continue
+            neutral = self._neutral_bvh_joint_angles.get(name)
+            if neutral is None:
+                continue
+            i = self.names.index(name)
+            target = self.reference_q[i] + self._wrap_pi(float(value) - float(neutral))
+            prior[name] = float(np.clip(target, self.lower[i], self.upper[i]))
+        return prior
+
+    def _solve_arm_position_block(
+        self,
+        side: str,
+        target: Dict[str, np.ndarray],
+        q_start: np.ndarray,
+        joint_prior: Dict[str, float] | None = None,
+    ) -> None:
         """Shoulder (arm_0/1/2, spherical) + elbow (arm_3, single-DOF)
         solved together, in closed form. Covers the "3" and the "1" of the
         arm's 3-1-3 structure in one pass -- elbow position only depends
@@ -533,7 +595,20 @@ class RBY1UpperBodyRetargeter:
                     self._values(qtest), self.root_pose, only=[wrist_link]
                 )[wrist_link].pos
                 wrist_err = float(np.linalg.norm(wpos - target[wrist_key]))
-                score = (round(violation, 6), round(wrist_err, 6), float(np.linalg.norm(clipped - q_start[idx4])))
+                if joint_prior:
+                    prior_vec = np.array([
+                        joint_prior.get(f"{side}_arm_{i}", q_start[self.names.index(f"{side}_arm_{i}")])
+                        for i in range(4)
+                    ])
+                    prior_err = float(np.linalg.norm(clipped - prior_vec))
+                else:
+                    prior_err = 0.0
+                score = (
+                    round(violation, 6),
+                    round(wrist_err, 6),
+                    round(prior_err, 6),
+                    float(np.linalg.norm(clipped - q_start[idx4])),
+                )
                 if best is None or score < best[0]:
                     best = (score, clipped)
 
@@ -541,16 +616,43 @@ class RBY1UpperBodyRetargeter:
 
     def _wrist_rotation_target(self, side: str, human: UpperBodyLandmarks) -> np.ndarray | None:
         """World rotation the robot's link_{side}_arm_6 should reach, or
-        None if this frame/calibration has no wrist rotation to go on (same
-        None-means-skip convention as head_rotation)."""
+        None if this frame has no wrist rotation to go on (same
+        None-means-skip convention as head_rotation).
+
+        Built directly from BVH's own known hand-local axis semantics and
+        the DG5F palm's own known local axis semantics (both confirmed on
+        real hardware -- see the module-level _BVH_HAND_*/_PALM_* comments),
+        composed through the URDF's fixed dg_base/palm mount offset
+        (_HAND_MOUNT_ROTATION, 180 deg about X from link_{side}_arm_6).
+
+        This replaced an earlier neutral-delta approach (conjugating a
+        calibration-relative wrist rotation delta by the Kabsch
+        body-alignment rotation _human_to_robot) that solved wrong relative
+        to dg_base: that conjugation is only valid if the human wrist's own
+        local rest frame happens to line up with _human_to_robot, which was
+        fit from torso/shoulder/head *positions* and has no established
+        relationship to the wrist's local axis convention. Tracking the
+        fingers/dorsal *directions* explicitly sidesteps that -- direction
+        vectors transform correctly under _human_to_robot regardless of
+        either frame's local axis convention, since it's fit exactly for
+        that (position-vector-direction) purpose.
+        """
         current = human.left_wrist_rotation if side == "left" else human.right_wrist_rotation
-        neutral = self._neutral_wrist_rotation.get(side)
-        if current is None or neutral is None:
+        if current is None:
             return None
+        current = np.asarray(current, dtype=float)
         a = self._human_to_robot
-        delta_human = neutral.T @ np.asarray(current)  # rotation since calibration, in human/mocap frame
-        delta_robot = a @ delta_human @ a.T  # same delta, expressed in the robot's frame (a is orthogonal)
-        return self._reference_wrist_orientation[side] @ delta_robot
+
+        fingers_world = _unit(a @ (current @ _BVH_HAND_FINGERS_LOCAL[side]))
+        dorsal_world = a @ (current @ _BVH_HAND_DORSAL_LOCAL)
+        dorsal_world = _unit(dorsal_world - np.dot(dorsal_world, fingers_world) * fingers_world)
+        third_world = np.cross(fingers_world, dorsal_world)  # local +Y, so (dorsal, +Y, fingers) stays right-handed
+
+        palm_target = np.empty((3, 3))
+        palm_target[:, 0] = dorsal_world
+        palm_target[:, 1] = third_world
+        palm_target[:, 2] = fingers_world
+        return palm_target @ _HAND_MOUNT_ROTATION
 
     @staticmethod
     def _zyz_candidates(m: np.ndarray) -> list:
@@ -575,7 +677,11 @@ class RBY1UpperBodyRetargeter:
         return candidates
 
     def _solve_wrist_orientation_block(
-        self, side: str, rotation_target: np.ndarray, q_start: np.ndarray,
+        self,
+        side: str,
+        rotation_target: np.ndarray,
+        q_start: np.ndarray,
+        joint_prior: Dict[str, float] | None = None,
     ) -> None:
         """3-DOF wrist (arm_4/5/6) only, solved in closed form -- these
         three joints also share a single point (== the wrist landmark
@@ -597,11 +703,30 @@ class RBY1UpperBodyRetargeter:
             v = np.array(c)
             return float(np.sum(np.clip(self.lower[idx] - v, 0, None) + np.clip(v - self.upper[idx], 0, None)))
 
+        if joint_prior:
+            prior_vec = np.array([
+                joint_prior.get(f"{side}_arm_{i}", q_start[self.names.index(f"{side}_arm_{i}")])
+                for i in (4, 5, 6)
+            ])
+        else:
+            prior_vec = None
+
         best = min(
             self._zyz_candidates(m),
-            key=lambda c: (round(violation(c), 6), np.linalg.norm(np.array(c) - q_start[idx])),
+            key=lambda c: (
+                round(violation(c), 6),
+                round(0.0 if prior_vec is None else float(np.linalg.norm(np.array(c) - prior_vec)), 6),
+                np.linalg.norm(np.array(c) - q_start[idx]),
+            ),
         )
         self.q[idx] = np.clip(best, self.lower[idx], self.upper[idx])
+
+        wrist_link = f"link_{side}_arm_6"
+        achieved = self.tree.forward_kinematics(
+            self._values(self.q), self.root_pose, only=[wrist_link]
+        )[wrist_link].as_matrix()
+        cos_angle = np.clip((np.trace(rotation_target.T @ achieved) - 1.0) / 2.0, -1.0, 1.0)
+        self.last_wrist_orientation_error_deg[side] = float(np.degrees(np.arccos(cos_angle)))
 
     def solve_wrist(self, side: str, wrist_pos: np.ndarray, iterations: int = 7) -> Dict[str, float]:
         """Torso-fixed, one-arm, wrist-position-only IK.
@@ -625,6 +750,29 @@ class RBY1UpperBodyRetargeter:
         self.last_error_m = {key: float(np.linalg.norm(target[key] - final_points[key]))}
         return self._values(self.q)
 
+    def solve_wrist_pose(
+        self,
+        side: str,
+        wrist_pos: np.ndarray,
+        wrist_rotation: np.ndarray | None = None,
+        iterations: int = 7,
+    ) -> Dict[str, float]:
+        """Torso-fixed one-arm IK for a wrist position plus optional rotation.
+
+        This is the Quest-only counterpart to update()'s mocap path: Quest
+        supplies a wrist pose directly, already in the robot frame after the
+        caller's calibration/remap, so this skips landmark calibration and
+        only drives that arm. Position is solved first; wrist orientation
+        then uses the same closed-form arm_4/5/6 block as the full upper-body
+        retargeter.
+        """
+        joints = self.solve_wrist(side, wrist_pos, iterations)
+        if wrist_rotation is not None:
+            q_start = self.q.copy()
+            self._solve_wrist_orientation_block(side, np.asarray(wrist_rotation, dtype=float), q_start)
+            joints = self._values(self.q)
+        return joints
+
     def update(
         self,
         human: UpperBodyLandmarks,
@@ -633,6 +781,7 @@ class RBY1UpperBodyRetargeter:
     ) -> Dict[str, float]:
         target = self._targets(human)
         q_start = self.q.copy()
+        joint_prior = self._bvh_joint_prior(human)
 
         if retarget_torso:
             # Torso motion changes both arms' and the head's chain, so this
@@ -649,10 +798,10 @@ class RBY1UpperBodyRetargeter:
             # wrist-as-one-block split was for whole arms vs. torso+head.
             self.q[:2] = self.reference_q[:2]
             for side in ("left", "right"):
-                self._solve_arm_position_block(side, target, q_start)
+                self._solve_arm_position_block(side, target, q_start, joint_prior)
                 rotation_target = self._wrist_rotation_target(side, human)
                 if rotation_target is not None:
-                    self._solve_wrist_orientation_block(side, rotation_target, q_start)
+                    self._solve_wrist_orientation_block(side, rotation_target, q_start, joint_prior)
             self._solve_block(("head_0", "head_1"), ("head",), target, q_start, iterations)
 
         if human.head_rotation is not None and self._neutral_head_rotation is not None:

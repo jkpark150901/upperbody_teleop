@@ -186,3 +186,66 @@ class ArticulationSender:
                 sock = None
         if sock is not None:
             sock.close()
+
+
+class ArticulationReceiver:
+    """UDP receiver for one or more ArticulationSenders sharing one port --
+    e.g. a hand-retargeting process and a body/arm-retargeting process each
+    running as their own ArticulationSender, both pointed at the same
+    physics-only process's port. Each sender's layout is tracked by its own
+    id, so frames from different senders (different joint-name sets) merge
+    into one running `joints` dict instead of one clobbering the other.
+
+    Non-blocking: poll() drains whatever is queued and returns immediately,
+    for a caller already running its own fixed-rate loop (a physics step
+    loop, here) rather than blocking on the network.
+    """
+
+    def __init__(self, port: int, host: str = "0.0.0.0"):
+        self.port = port
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._sock.bind((host, port))
+        self._sock.setblocking(False)
+        self._layouts: Dict[str, List[str]] = {}
+        self.joints: Dict[str, float] = {}
+        self.last_frame_t: Optional[float] = None
+        # Latency breakdown, from the most recently *processed* frame (last
+        # one whose layout was already known -- see poll()'s "continue"
+        # below, which skips frames it can't decode yet). Both clocks are
+        # time.time() (wall clock) on sender and receiver, so this only
+        # means anything with synced clocks -- true for two local processes
+        # on the same machine, which is the only setup this was built for.
+        #   network_latency_ms:  t_recv - t_send        (wire transit only)
+        #   pipeline_latency_ms: t_recv - t_sample       (+ sender's own
+        #                        capture-to-send time, e.g. retargeting compute)
+        # Neither includes physics/actuator settling time on this end --
+        # that's a separate question (see mujoco_physics_process.py's own
+        # ctrl-vs-qpos tracking-error diagnostic), not a communication one.
+        self.network_latency_ms: Optional[float] = None
+        self.pipeline_latency_ms: Optional[float] = None
+
+    def poll(self) -> None:
+        while True:
+            try:
+                data, _ = self._sock.recvfrom(65536)
+            except BlockingIOError:
+                break
+            try:
+                msg = decode_message(data)
+            except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                continue  # malformed/garbage datagram -- drop, don't crash the physics loop
+            if msg["type"] == "layout":
+                self._layouts[msg["layout"]] = msg["names"]
+                continue
+            names = self._layouts.get(msg["layout"])
+            if names is None:
+                continue  # frame arrived before its layout -- next LAYOUT_INTERVAL_S resend will fix it
+            for name, value in zip(names, msg["q"]):
+                self.joints[name] = value
+            now = time.time()
+            self.last_frame_t = now
+            self.network_latency_ms = (now - msg["t_send"]) * 1000.0
+            self.pipeline_latency_ms = (now - msg["t_sample"]) * 1000.0
+
+    def close(self) -> None:
+        self._sock.close()

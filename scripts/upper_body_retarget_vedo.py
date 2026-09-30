@@ -71,18 +71,25 @@ if str(_ROOT) not in sys.path:
 _SDK = _ROOT / "MocapApi" / "demo" / "demo-py"
 if str(_SDK) not in sys.path:
     sys.path.insert(0, str(_SDK))
+_ANYDEX_MOCAP_SDK = (
+    _ROOT / "third_party" / "AnyDexRetarget" / "example" / "input" / "third_party" / "mocapapi_python"
+)
+if str(_ANYDEX_MOCAP_SDK) not in sys.path:
+    sys.path.append(str(_ANYDEX_MOCAP_SDK))
 
 import numpy as np  # noqa: E402
 import vedo  # noqa: E402
 
-from devices.quest_hand.quest_hand_reader import QuestHandUDPReader  # noqa: E402
+from devices.quest_hand.quest_hand_reader import XR_WRIST, QuestHandUDPReader  # noqa: E402
 from devices.senseglove.sg_reader import (  # noqa: E402
     MockSenseGloveReader,
     SenseGloveJSONBridgeReader,
     SenseGloveReaderBase,
     SGCoreSenseGloveReader,
 )
+from devices.senseglove.sg_types import FINGER_NAMES, HandState  # noqa: E402
 from robot_hand.upper_body_retarget import (  # noqa: E402
+    MOCAP_TRACKER_NAMES,
     RBY1UpperBodyRetargeter,
     UpperBodyLandmarks,
 )
@@ -93,14 +100,38 @@ from robot_hand.urdf_fk import load_urdf  # noqa: E402
 from teleop.articulation_protocol import ArticulationSender  # noqa: E402
 from teleop.geometry import Pose  # noqa: E402
 from teleop.geometry import quat_to_mat  # noqa: E402
-from scripts.mocap_skeleton_vedo import ReplaySkeletonSource, build_hierarchy  # noqa: E402
+
+# scripts.mocap_skeleton_vedo imports MocapApi at its own top level, which
+# needs MocapApi/demo/demo-py vendored (the real Axis Studio SDK, not part
+# of this repo) -- only --show-skeleton's dual-panel view and
+# MocapLandmarkReader's capture_skeleton=True path actually need
+# ReplaySkeletonSource/build_hierarchy, so those two are imported lazily,
+# right where they're used, instead of here. That keeps --backend
+# mock/quest/replay runnable without that SDK present at all.
 
 _URDF = _ROOT / "rby1_dg5f.urdf"
-_MOCAP_NAMES = {
-    "hips": ("Hips",), "chest": ("Spine3", "Spine2", "Spine1", "Spine"), "head": ("Head",),
-    "left_shoulder": ("LeftShoulder",), "left_elbow": ("LeftForeArm",), "left_wrist": ("LeftHand",),
-    "right_shoulder": ("RightShoulder",), "right_elbow": ("RightForeArm",), "right_wrist": ("RightHand",),
+# "hips" has no robot-link counterpart (Kabsch calibration reference only,
+# see calibrate()) so it isn't in configs/upper_body/bvh_tracker.yaml's
+# tracker table; every other entry comes straight from that config so this
+# project and ROBOT_LANDMARK_LINKS can't drift apart on bone-name choice.
+_MOCAP_NAMES = {"hips": ("Hips",), **MOCAP_TRACKER_NAMES}
+_BVH_ARM_ROTATION_NAMES = {
+    "left": ("LeftArm", "LeftForeArm", "LeftHand"),
+    "right": ("RightArm", "RightForeArm", "RightHand"),
 }
+# MocapApi's own finger bone names (confirmed against MocapApi/demo/demo-py's
+# joint name list -- LeftHandThumb1..3/LeftHandIndex1..3/etc, no "4"/tip
+# joint carries useful bend info so only the 3 knuckle bones per finger are
+# read), 3 bones per finger, FINGER_NAMES order (thumb/index/middle/ring/pinky)
+# so the resulting flexion array lines up with HandState.flexion/Dg5fHandRetargeter.
+_BVH_FINGER_JOINTS = {
+    side: {
+        finger: tuple(f"{side.capitalize()}Hand{finger.capitalize()}{i}" for i in (1, 2, 3))
+        for finger in FINGER_NAMES
+    }
+    for side in ("left", "right")
+}
+_FINGER_MAX_BEND_RAD = 1.75  # same total-curl-at-flexion==1.0 assumption sg_reader.py's mock uses
 _UPPER_LINKS = {
     "base", "link_torso_hp", "link_torso_5",
     *(f"link_left_arm_{i}" for i in range(7)),
@@ -123,7 +154,10 @@ _HAND_URDF_PATHS = {
 }
 class MocapLandmarkReader:
     def __init__(self, port: int, capture_skeleton: bool = False):
-        from MocapApi import mocap_api as mcp
+        try:
+            from MocapApi import mocap_api as mcp
+        except ImportError:
+            import mocap_api as mcp
         self.mcp, self.port = mcp, port
         self.app = None
         self.avatar_handle = None
@@ -140,6 +174,12 @@ class MocapLandmarkReader:
         self.names: Optional[list] = None
         self.edges: Optional[list] = None
         self.positions: dict = {}
+        # Finger flexion computed from the same avatar's BVH finger bones
+        # (see _bvh_hand_state) -- exposed the same way CombinedReplayReader/
+        # Quest sources already do, so main()'s existing
+        # `getattr(reader, "last_hand", None)` fallback picks it up with no
+        # further wiring when --hand-backend is left at its "none" default.
+        self.last_hand: Dict[str, Optional[HandState]] = {"left": None, "right": None}
         # Some MocapApi builds/streaming modes (live BVH UDP, at least)
         # return an error from get_avatar_posture_time() on every call --
         # and the SDK's own wrapper prints a debug line before raising, so
@@ -188,12 +228,110 @@ class MocapLandmarkReader:
         as "not attached to the wrist") once the arm was raised.
         """
         x, y, z, w = ctypes.c_float(), ctypes.c_float(), ctypes.c_float(), ctypes.c_float()
-        err = joint.api.contents.GetJointGlobalRotation(
+        # MocapApi/demo/demo-py's generated Python wrapper declares
+        # GetJointGlobalRotation with two c_int32 slots where the y/z float
+        # pointers should be. The C header is correct, so reuse the proc
+        # table address with the fixed ctypes signature instead of patching
+        # the vendored submodule in place.
+        if not hasattr(self, "_get_joint_global_rotation"):
+            raw = joint.api.contents.GetJointGlobalRotation
+            addr = ctypes.cast(raw, ctypes.c_void_p).value
+            proto = ctypes.CFUNCTYPE(
+                ctypes.c_int32,
+                ctypes.POINTER(ctypes.c_float),
+                ctypes.POINTER(ctypes.c_float),
+                ctypes.POINTER(ctypes.c_float),
+                ctypes.POINTER(ctypes.c_float),
+                self.mcp.MCPJointHandle,
+            )
+            self._get_joint_global_rotation = proto(addr)
+        err = self._get_joint_global_rotation(
             ctypes.pointer(x), ctypes.pointer(y), ctypes.pointer(z), ctypes.pointer(w), joint.handle
         )
         if err != self.mcp.MCPError.NoError:
             raise RuntimeError(f"GetJointGlobalRotation failed: {self.mcp.MCPError._fields[err]}")
         return quat_to_mat(np.array([w.value, x.value, y.value, z.value]))
+
+    @staticmethod
+    def _local_euler_radians(joint) -> np.ndarray:
+        values = np.asarray(joint.get_local_rotation_by_euler(), dtype=float)
+        if np.max(np.abs(values)) > 2.0 * np.pi:
+            values = np.deg2rad(values)
+        return values
+
+    def _bvh_joint_angle_hints(self, joints: dict) -> Dict[str, float] | None:
+        """Approximate RBY1 joint-angle hints from BVH local rotations.
+
+        These are intentionally only hints. RBY1 and BVH skeletons do not
+        share a hierarchy or rest pose, but these channels preserve useful
+        directionality for branch selection inside the IK solver.
+        """
+        if any(
+            name not in joints
+            for names in _BVH_ARM_ROTATION_NAMES.values()
+            for name in names
+        ):
+            return None
+        hints: Dict[str, float] = {}
+        for side in ("left", "right"):
+            upper_name, forearm_name, hand_name = _BVH_ARM_ROTATION_NAMES[side]
+            upper = self._local_euler_radians(joints[upper_name])
+            forearm = self._local_euler_radians(joints[forearm_name])
+            hand = self._local_euler_radians(joints[hand_name])
+            lift_sign = 1.0 if side == "left" else -1.0
+            # Robot roles are fixed by the URDF's own joint axes (see
+            # bvh_upper_body_mapping.md): arm_0 (~Y axis) is shoulder
+            # flexion/extension, arm_1 (X axis) is abduction/adduction,
+            # arm_2 (Z axis) is internal/external rotation. Re-derived from
+            # real-hardware test reports (each round told us which BVH
+            # index tracks which physical human motion, holding the robot
+            # role fixed): index 0 of a bone's local Euler is that bone's
+            # flexion-type component (sign opposite the robot's), index 1
+            # is its roll/rotation-type component, index 2 is its
+            # abduction-type component. Elbow/forearm-roll/wrist (arm_3..6)
+            # extrapolate the same index-role pattern from the
+            # upper-arm-bone result above; not yet independently confirmed.
+            hints.update({
+                f"{side}_arm_0": float(upper[0]),
+                f"{side}_arm_1": float(lift_sign * upper[2]),
+                f"{side}_arm_2": float(upper[1]),
+                f"{side}_arm_3": float(-abs(forearm[0])),
+                f"{side}_arm_4": float(forearm[1]),
+                f"{side}_arm_5": float(hand[0]),
+                f"{side}_arm_6": float(hand[2]),
+            })
+        return hints
+
+    def _bvh_hand_state(self, joints: dict) -> Dict[str, Optional[HandState]]:
+        """Per-finger flexion (HandState, same shape as a SenseGlove sample)
+        from the same avatar's BVH finger bones -- lets Axis Studio's own
+        glove/finger tracking drive the DG5F hand directly, no separate
+        SenseGlove/Quest hand source needed.
+
+        Flexion per finger is the mean *rotation-angle magnitude* (not a
+        signed single axis) across that finger's 3 knuckle bones, normalized
+        by _FINGER_MAX_BEND_RAD -- deliberately axis-convention-agnostic
+        (unlike _bvh_joint_angle_hints's per-axis arm mapping, which took
+        several rounds of real-hardware testing to get right): a finger
+        bends mostly about one axis with only minor cross-axis noise, so the
+        total rotation magnitude is a robust proxy regardless of exactly
+        which local axis BVH considers "flexion" for a given finger bone.
+        """
+        result: Dict[str, Optional[HandState]] = {}
+        for side in ("left", "right"):
+            finger_bones = _BVH_FINGER_JOINTS[side]
+            if any(name not in joints for names in finger_bones.values() for name in names):
+                result[side] = None
+                continue
+            flexion = np.zeros(len(FINGER_NAMES))
+            for i, finger in enumerate(FINGER_NAMES):
+                bend = np.mean([
+                    float(np.linalg.norm(self._local_euler_radians(joints[name])))
+                    for name in finger_bones[finger]
+                ])
+                flexion[i] = float(np.clip(bend / _FINGER_MAX_BEND_RAD, 0.0, 1.0))
+            result[side] = HandState(timestamp=time.time(), hand=side, flexion=flexion)
+        return result
 
     def _capture_latency_ms(self, avatar) -> Optional[float]:
         """Local wall clock minus the polled posture's device-side timestamp.
@@ -264,8 +402,11 @@ class MocapLandmarkReader:
         # docstring for the bug this replaced.
         values["left_wrist_rotation"] = self._global_rotation(joints[resolved["left_wrist"]])
         values["right_wrist_rotation"] = self._global_rotation(joints[resolved["right_wrist"]])
+        values["bvh_joint_angles"] = self._bvh_joint_angle_hints(joints)
+        self.last_hand = self._bvh_hand_state(joints)
         if self.capture_skeleton:
             if self.names is None:
+                from scripts.mocap_skeleton_vedo import build_hierarchy  # local: see top-of-file note
                 self.names, self.edges = build_hierarchy(avatar)
             self.positions = {name: self._global_position(joint) for name, joint in joints.items()}
         return UpperBodyLandmarks(**values)
@@ -639,7 +780,26 @@ def _launch_calibration_gui(action_queue: "queue.Queue[str]", status_queue: "que
 
 def main():
     parser = argparse.ArgumentParser(description="PN -> RBY1 upper-body retargeting in Vedo")
-    parser.add_argument("--backend", choices=("mock", "mocapapi", "replay"), default="mock")
+    parser.add_argument(
+        "--backend", choices=("mock", "mocapapi", "replay", "quest"), default="mock",
+        help="arm/torso data source. 'quest' skips mocap entirely and drives each arm's wrist "
+             "with RBY1UpperBodyRetargeter.solve_wrist() (the same wrist-only IK "
+             "scripts/wrist_ik_test_vedo.py --backend live tests) off the Quest hand's own "
+             "OpenXR wrist joint -- a delta from where that hand first appeared (scaled by "
+             "--wrist-scale), no calibration. Requires --hand-backend quest (reuses that same "
+             "reader instead of a second UDP socket). No torso/head/shoulder/elbow targeting in "
+             "this mode -- only the wrist position, same scope as solve_wrist() itself.",
+    )
+    parser.add_argument(
+        "--wrist-scale", type=float, default=1.0,
+        help="--backend quest only: multiplies the Quest wrist delta before it's added to the "
+             "robot's own neutral wrist position. A human arm's real reach and the robot arm's "
+             "reach are different, so a raw 1:1 (scale=1.0) delta can ask solve_wrist() for "
+             "targets right at or past the robot's workspace edge -- the DLS iterations then "
+             "hunt/oscillate between joint-limit-clipped solutions every tick instead of "
+             "converging, which looks like trembling. If that happens, try something smaller, "
+             "e.g. 0.4-0.6, so the same hand motion maps to a target safely inside reach.",
+    )
     parser.add_argument("--port", type=int, default=7002)
     parser.add_argument(
         "--replay-file", type=pathlib.Path, default=None,
@@ -725,12 +885,23 @@ def main():
     args = parser.parse_args()
     if args.backend == "replay" and args.replay_file is None:
         parser.error("--backend replay requires --replay-file")
+    if args.backend == "quest" and args.hand_backend != "quest":
+        parser.error("--backend quest requires --hand-backend quest (same Quest UDP stream)")
+    if args.backend == "quest" and args.record is not None:
+        parser.error("--record isn't supported with --backend quest yet (no UpperBodyLandmarks frame to log)")
+    if args.backend == "quest" and args.show_skeleton:
+        parser.error("--show-skeleton has no raw mocap skeleton to show with --backend quest")
 
     tree = load_urdf(str(_URDF))
     retargeter = RBY1UpperBodyRetargeter(tree, calibration_pose=args.calibration_pose)
     retargeter.use_bvh_scale = args.bvh_scale
     replay_kind = _replay_format(args.replay_file) if args.backend == "replay" else None
-    if args.backend == "mock":
+    if args.backend == "quest":
+        # No mocap connection at all -- see the wrist-IK branch in update()
+        # below. hand_reader (created further down, since --hand-backend
+        # quest is required above) is the only live connection.
+        reader = None
+    elif args.backend == "mock":
         reader = MockLandmarkReader(tree)
     elif args.backend == "replay":
         reader = (
@@ -739,7 +910,8 @@ def main():
         )
     else:
         reader = MocapLandmarkReader(args.port, capture_skeleton=args.show_skeleton)
-    reader.connect()
+    if reader is not None:
+        reader.connect()
 
     dual_panel = args.show_skeleton and (
         args.backend == "mocapapi" or (args.backend == "replay" and replay_kind == "skeleton")
@@ -779,6 +951,17 @@ def main():
             print(f"  {side}: config={rt.config_path}")
     last_hand: Dict[str, object] = {"left": None, "right": None}
     recorder = CombinedRecorder(args.record) if args.record is not None else None
+
+    # --backend quest only: the robot's own neutral wrist position (IK
+    # target base, matching wrist_ik_test_vedo.py's base_wrist) and, per
+    # side, the first Quest-reported wrist position seen -- everything
+    # after that is a delta off this origin, not an absolute position.
+    base_wrist: Dict[str, np.ndarray] = {}
+    quest_wrist_origin: Dict[str, np.ndarray] = {}
+    if args.backend == "quest":
+        base_wrist = {
+            side: retargeter.poses()[f"link_{side}_arm_6"].pos.copy() for side in ("left", "right")
+        }
 
     # Articulation stream: joint order = the IK's 18 torso/arm/head joints,
     # then each hand's 20 finger joints (thumb..pinky, _1.._4) -- the
@@ -850,6 +1033,7 @@ def main():
             skeleton_source = reader
             skeleton_label_text = "실시간 원본 스켈레톤 (raw mocap)"
         else:
+            from scripts.mocap_skeleton_vedo import ReplaySkeletonSource  # local: see top-of-file note
             skeleton_source = ReplaySkeletonSource(args.replay_file, loop=not args.no_loop)
             skeleton_source.connect()
             skeleton_label_text = "녹화된 원본 스켈레톤 (cm->m 스케일)"
@@ -983,41 +1167,89 @@ def main():
         except queue.Empty:
             pass
         now = time.monotonic()
-        frame = reader.poll()
-        if frame is None:
-            return
-        state["last_frame"] = frame
-        if hand_reader is not None:
+
+        if args.backend == "quest":
+            # No mocap frame at all -- each arm's wrist follows the Quest
+            # hand's own OpenXR wrist joint 1:1 (delta from wherever that
+            # hand first showed up), via the same solve_wrist() wrist-only
+            # IK scripts/wrist_ik_test_vedo.py --backend live drives. See
+            # the --backend help text: no torso/head/shoulder/elbow target,
+            # and axis remap below is an unverified best-effort guess, not
+            # a calibration -- re-check against what actually moves.
             left_hs, right_hs = hand_reader.poll()
             if left_hs is not None:
                 last_hand["left"] = left_hs
             if right_hs is not None:
                 last_hand["right"] = right_hs
+            joints = None
+            wrist_errors: Dict[str, float] = {}
+            ik_t0 = time.perf_counter()
+            for side in ("left", "right"):
+                sample = last_hand.get(side)
+                if not _is_quest_hand(sample):
+                    continue  # never seen yet, or tracking currently lost -- hold last solved pose
+                wrist_raw = sample.raw["xr_joints"][XR_WRIST, :3]
+                if side not in quest_wrist_origin:
+                    quest_wrist_origin[side] = wrist_raw.copy()
+                delta_quest = wrist_raw - quest_wrist_origin[side]
+                # OpenXR LOCAL space: X=right, Y=up, Z=backward (forward=-Z).
+                # Robot (rby1_dg5f.urdf): X=forward, Y=left, Z=up -- verified
+                # from the URDF itself, not assumed: every joint origin from
+                # `base` through the head chain (torso_hp/torso_5/head_base/
+                # head_0/head_1) has rpy="0 0 0", so the head frame shares
+                # base's axes exactly at rest, and right_arm_0's origin has
+                # y=-0.220 (right side sits at -Y), confirming Y+=left.
+                # robot.x=forward=-quest.z, robot.y=left=-quest.x,
+                # robot.z=up=quest.y. (Earlier version of this line had X/Y
+                # swapped -- that bug, not scale, was likely why large
+                # movements didn't converge/trembled.)
+                delta_robot = args.wrist_scale * np.array(
+                    [-delta_quest[2], -delta_quest[0], delta_quest[1]]
+                )
+                joints = retargeter.solve_wrist(side, base_wrist[side] + delta_robot)
+                wrist_errors[f"{side}_wrist"] = retargeter.last_error_m[f"{side}_wrist"]
+            retargeter.last_error_m = wrist_errors
+            state["tick"] += 1
+            state["ik_ms_sum"] += (time.perf_counter() - ik_t0) * 1000.0
+            state["ik_ms_n"] += 1
+            if joints is None:
+                return  # neither hand has ever reported a wrist position yet
         else:
-            # --backend replay with a combined-format recording carries its
-            # own per-frame flexion (see CombinedReplayReader) -- only used
-            # when no *live* hand backend was asked for above.
-            embedded = getattr(reader, "last_hand", None)
-            if embedded is not None:
-                last_hand = embedded
-        if recorder is not None:
-            recorder.write_frame(frame, {side: _hand_flexion(sample) for side, sample in last_hand.items()})
-        if state["calibrate"]:
-            retargeter.calibrate(frame)
-            state["calibrate"] = False
-            status_text.text(f"{_POSE_LABEL[state['pose']]} 초기화 완료 -- 로봇 제어 중").color("white").background("green4")
-            print(
-                f"[upper_body] {state['pose']} initialized -- 1/2/3=자세 캡처, C=다중 자세 확정, "
-                "0=버퍼 초기화, R=즉시 단일 자세 재초기화"
-            )
-        # Timed separately from poll/FK/render so a "slow" complaint can be
-        # pinned on the IK itself rather than guessed at from the overall
-        # poll Hz (which also includes network/reader wait time).
-        ik_t0 = time.perf_counter()
-        joints = retargeter.update(frame, retarget_torso=args.torso == "retarget")
-        state["tick"] += 1
-        state["ik_ms_sum"] += (time.perf_counter() - ik_t0) * 1000.0
-        state["ik_ms_n"] += 1
+            frame = reader.poll()
+            if frame is None:
+                return
+            state["last_frame"] = frame
+            if hand_reader is not None:
+                left_hs, right_hs = hand_reader.poll()
+                if left_hs is not None:
+                    last_hand["left"] = left_hs
+                if right_hs is not None:
+                    last_hand["right"] = right_hs
+            else:
+                # --backend replay with a combined-format recording carries
+                # its own per-frame flexion (see CombinedReplayReader) --
+                # only used when no *live* hand backend was asked for above.
+                embedded = getattr(reader, "last_hand", None)
+                if embedded is not None:
+                    last_hand = embedded
+            if recorder is not None:
+                recorder.write_frame(frame, {side: _hand_flexion(sample) for side, sample in last_hand.items()})
+            if state["calibrate"]:
+                retargeter.calibrate(frame)
+                state["calibrate"] = False
+                status_text.text(f"{_POSE_LABEL[state['pose']]} 초기화 완료 -- 로봇 제어 중").color("white").background("green4")
+                print(
+                    f"[upper_body] {state['pose']} initialized -- 1/2/3=자세 캡처, C=다중 자세 확정, "
+                    "0=버퍼 초기화, R=즉시 단일 자세 재초기화"
+                )
+            # Timed separately from poll/FK/render so a "slow" complaint can be
+            # pinned on the IK itself rather than guessed at from the overall
+            # poll Hz (which also includes network/reader wait time).
+            ik_t0 = time.perf_counter()
+            joints = retargeter.update(frame, retarget_torso=args.torso == "retarget")
+            state["tick"] += 1
+            state["ik_ms_sum"] += (time.perf_counter() - ik_t0) * 1000.0
+            state["ik_ms_n"] += 1
         # left_wrist/right_wrist/head are the landmarks IK has real
         # authority over (see target_markers comment above) -- averaging
         # just those gives a "is retargeting aiming where the IK can
@@ -1141,13 +1373,15 @@ def main():
     plotter.timer_callback("create", dt=max(1, int(1000 / args.hz)))
     print(f"[upper_body] backend={args.backend}, UDP={args.port}, torso={args.torso}, "
           f"hand_backend={args.hand_backend}, record={args.record}, send={args.send}, "
-          f"poll={args.hz:.0f}Hz, render(capped)={args.render_hz:.0f}Hz, bvh_scale={args.bvh_scale}; "
+          f"poll={args.hz:.0f}Hz, render(capped)={args.render_hz:.0f}Hz, bvh_scale={args.bvh_scale}"
+          + (f", wrist_scale={args.wrist_scale}" if args.backend == "quest" else "") + "; "
           "keys: 1=차렷 2=T-pose 3=만세 캡처, C=다중 자세 캘리브레이션 확정(+BVH 스케일 보정 ON), "
           "0=버퍼 초기화, R=즉시 단일 자세 재캘리브레이션")
     try:
         plotter.show(interactive=True)
     finally:
-        reader.close()
+        if reader is not None:
+            reader.close()
         if hand_reader is not None:
             hand_reader.close()
         if recorder is not None:

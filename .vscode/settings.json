@@ -1,3 +1,5 @@
 {
-    "cmake.sourceDirectory": "D:/upperbody_teleop/Meta-OpenXR-SDK/Samples"
+    "cmake.sourceDirectory": "D:/upperbody_teleop/Meta-OpenXR-SDK/Samples",
+    "python-envs.defaultEnvManager": "ms-python.python:conda",
+    "python-envs.defaultPackageManager": "ms-python.python:conda"
 }

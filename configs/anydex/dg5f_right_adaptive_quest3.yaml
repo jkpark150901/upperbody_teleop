@@ -1,0 +1,70 @@
+# DG5F right hand - AnyDexRetarget AdaptiveOptimizerAnalytical for Quest/OpenXR
+# input. See dg5f_left_adaptive_quest3.yaml for the full explanation of why
+# this optimizer (vs. KeyVectorOptimizer's dg5f_right_vector_quest3.yaml)
+# is what actually handles pinch/finger-contact motions.
+
+optimizer:
+  type: "AdaptiveOptimizerAnalytical"
+
+robot:
+  type: "dg5f"
+  urdf_path: "robot_hand/urdf/dg5f_right.urdf"
+  origin_link: "right_hand_rl_dg_palm"
+  tip_links:
+    - "right_hand_rl_dg_1_tip"
+    - "right_hand_rl_dg_2_tip"
+    - "right_hand_rl_dg_3_tip"
+    - "right_hand_rl_dg_4_tip"
+    - "right_hand_rl_dg_5_tip"
+  link1_names:
+    - "right_hand_rl_dg_1_1"
+    - "right_hand_rl_dg_2_1"
+    - "right_hand_rl_dg_3_1"
+    - "right_hand_rl_dg_4_1"
+    - "right_hand_rl_dg_5_1"
+  link3_names:
+    - "right_hand_rl_dg_1_3"
+    - "right_hand_rl_dg_2_3"
+    - "right_hand_rl_dg_3_3"
+    - "right_hand_rl_dg_4_3"
+    - "right_hand_rl_dg_5_3"
+  link4_names:
+    - "right_hand_rl_dg_1_4"
+    - "right_hand_rl_dg_2_4"
+    - "right_hand_rl_dg_3_4"
+    - "right_hand_rl_dg_4_4"
+    - "right_hand_rl_dg_5_4"
+  num_fingers: 5
+  neutral_qpos: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+retarget:
+  huber_delta: 2.0
+  huber_delta_dir: 0.5
+  norm_delta: 0.04
+
+  w_pos: 5.0
+  w_dir: 1.0
+  project_tip_dir: false
+
+  w_full_hand: 1.0
+  pinch_scaling: 1.0
+  alpha: 1.0
+  w_contact: 6.0
+  segment_scaling:
+    thumb: [1.0, 1.0, 1.0]
+    index: [1.0, 1.03, 1.05]
+    middle: [1.0, 1.0, 1.0]
+    ring: [1.0, 1.0, 1.0]
+    pinky: [1.05, 1.15, 1.15]
+
+  pinch_thresholds:
+    index: {d1: 2.0, d2: 4.0}
+    middle: {d1: 2.0, d2: 4.0}
+    ring: {d1: 2.0, d2: 4.0}
+    pinky: {d1: 2.0, d2: 4.0}
+
+  # Copied from quest3_gaia_hand20.yaml (also right-hand) as a starting point.
+  mediapipe_rotation:
+    x: -7.0
+    y: 0.0
+    z: 0.0

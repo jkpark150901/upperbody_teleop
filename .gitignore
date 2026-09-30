@@ -7,3 +7,5 @@ __pycache__/
 *.pdb
 *.ilk
 outputs/anydex_urdf/
+outputs/mujoco_urdf/
+outputs/mujoco_meshes/

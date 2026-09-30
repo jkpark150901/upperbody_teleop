@@ -1,0 +1,85 @@
+# DG5F left hand - AnyDexRetarget AdaptiveOptimizerAnalytical for Quest/OpenXR
+# input. Unlike dg5f_left_vector_quest3.yaml's KeyVectorOptimizer (simple,
+# independent per-finger vector matching -- no notion that two fingertips
+# might need to stay together), this optimizer explicitly detects pinch/
+# contact (via thumb-to-fingertip distance in the human keypoints) and adds
+# a contact loss (w_contact) plus a target blend that keeps the thumb and
+# the active finger's targets consistent with each other during a pinch --
+# see third_party/AnyDexRetarget/anydexretarget/optimizer/
+# analytical_optimizer.py's _compute_pinch_alpha/_compute_adaptive_targets.
+#
+# retarget: section values are borrowed as-is from
+# third_party/AnyDexRetarget/example/config/adaptive/quest3/
+# quest3_gaia_hand20.yaml (same reasoning as the vector config -- gaia_hand20
+# is the closest structural match: 5 fingers, _3/_4/tip segments, 20 DOF).
+# UNVERIFIED against a real DG5F/Quest recording; see
+# vr_device_dg5f_retargeting.md section 9's tuning workflow.
+
+optimizer:
+  type: "AdaptiveOptimizerAnalytical"
+
+robot:
+  type: "dg5f"
+  urdf_path: "robot_hand/urdf/dg5f_left.urdf"
+  origin_link: "left_hand_ll_dg_palm"
+  tip_links:
+    - "left_hand_ll_dg_1_tip"
+    - "left_hand_ll_dg_2_tip"
+    - "left_hand_ll_dg_3_tip"
+    - "left_hand_ll_dg_4_tip"
+    - "left_hand_ll_dg_5_tip"
+  link1_names:
+    - "left_hand_ll_dg_1_1"
+    - "left_hand_ll_dg_2_1"
+    - "left_hand_ll_dg_3_1"
+    - "left_hand_ll_dg_4_1"
+    - "left_hand_ll_dg_5_1"
+  link3_names:
+    - "left_hand_ll_dg_1_3"
+    - "left_hand_ll_dg_2_3"
+    - "left_hand_ll_dg_3_3"
+    - "left_hand_ll_dg_4_3"
+    - "left_hand_ll_dg_5_3"
+  link4_names:
+    - "left_hand_ll_dg_1_4"
+    - "left_hand_ll_dg_2_4"
+    - "left_hand_ll_dg_3_4"
+    - "left_hand_ll_dg_4_4"
+    - "left_hand_ll_dg_5_4"
+  num_fingers: 5
+  neutral_qpos: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+retarget:
+  huber_delta: 2.0
+  huber_delta_dir: 0.5
+  norm_delta: 0.04
+
+  w_pos: 5.0
+  w_dir: 1.0
+  project_tip_dir: false
+
+  w_full_hand: 1.0
+  pinch_scaling: 1.0
+  alpha: 1.0
+  w_contact: 6.0
+  segment_scaling:
+    thumb: [1.0, 1.0, 1.0]
+    index: [1.0, 1.03, 1.05]
+    middle: [1.0, 1.0, 1.0]
+    ring: [1.0, 1.0, 1.0]
+    pinky: [1.05, 1.15, 1.15]
+
+  # Pinch distance thresholds (cm), per non-thumb finger: d < d1 -> full
+  # contact blend (alpha=1), d > d2 -> normal posture target (alpha=0).
+  pinch_thresholds:
+    index: {d1: 2.0, d2: 4.0}
+    middle: {d1: 2.0, d2: 4.0}
+    ring: {d1: 2.0, d2: 4.0}
+    pinky: {d1: 2.0, d2: 4.0}
+
+  # Copied from quest3_gaia_hand20.yaml, which is right-hand only -- UNVERIFIED
+  # for the left hand, same caveat as dg5f_left_vector_quest3.yaml.
+  mediapipe_rotation:
+    x: -7.0
+    y: 0.0
+    z: 0.0

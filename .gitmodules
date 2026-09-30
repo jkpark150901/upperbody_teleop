@@ -1,3 +1,12 @@
 [submodule "third_party/AnyDexRetarget"]
 	path = third_party/AnyDexRetarget
 	url = https://github.com/qqsq12321/AnyDexRetarget.git
+[submodule "Meta-OpenXR-SDK"]
+	path = Meta-OpenXR-SDK
+	url = https://github.com/meta-quest/Meta-OpenXR-SDK.git
+[submodule "MocapApi"]
+	path = MocapApi
+	url = https://github.com/pnmocap/MocapApi.git
+[submodule "SenseCom"]
+	path = SenseCom
+	url = https://github.com/Adjuvo/SenseCom.git

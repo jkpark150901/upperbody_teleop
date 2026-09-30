@@ -170,6 +170,21 @@
         <mesh filename="rby1/rby1ub_src/urdf/meshes/LINK_13.dae" />
       </geometry>
     </visual>
+    <!-- Camera housing marker (rough box, not a measured real camera),
+         mirroring the cam_right_wrist camera that
+         robot_hand/mujoco_urdf.py's _build_actuated_spec() adds
+         programmatically to the compiled MJCF; added here too so the raw
+         URDF itself shows it (any URDF viewer, robot_hand/urdf_fk.py's
+         own tree, vedo scripts), not just the MuJoCo-specific pipeline. -->
+    <visual>
+      <origin xyz="0.03 0 0" rpy="0 0 0" />
+      <geometry>
+        <box size="0.03 0.04 0.024" />
+      </geometry>
+      <material name="camera_housing">
+        <color rgba="0.1 0.1 0.6 1" />
+      </material>
+    </visual>
   </link>
   <link name="link_left_arm_0">
     <inertial>
@@ -290,6 +305,16 @@
         <mesh filename="rby1/rby1ub_src/urdf/meshes/LINK_20.dae" />
       </geometry>
     </visual>
+    <!-- Camera housing marker, see link_right_arm_6's identical block above. -->
+    <visual>
+      <origin xyz="0.03 0 0" rpy="0 0 0" />
+      <geometry>
+        <box size="0.03 0.04 0.024" />
+      </geometry>
+      <material name="camera_housing">
+        <color rgba="0.1 0.1 0.6 1" />
+      </material>
+    </visual>
   </link>
   <link name="link_head_0">
     <inertial>
@@ -325,6 +350,16 @@
       <geometry>
         <mesh filename="rby1/rby1ub_src/urdf/meshes/PAN_TILT_3.dae" />
       </geometry>
+    </visual>
+    <!-- Camera housing marker, see link_right_arm_6's identical block above. -->
+    <visual>
+      <origin xyz="0.03 0 0" rpy="0 0 0" />
+      <geometry>
+        <box size="0.03 0.04 0.024" />
+      </geometry>
+      <material name="camera_housing">
+        <color rgba="0.1 0.1 0.6 1" />
+      </material>
     </visual>
   </link>
   <joint name="torso_hp" type="revolute">
