@@ -19,6 +19,7 @@ Run all three processes with run_all.bat, or standalone:
 from __future__ import annotations
 
 import argparse
+import os
 import pathlib
 import sys
 import threading
@@ -27,6 +28,48 @@ import time
 _ROOT = pathlib.Path(__file__).parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
+
+
+def _gl_backend_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--gl-backend", choices=["auto", "egl", "glfw", "osmesa"], default="auto",
+        help="OpenGL backend for CameraView's mujoco.Renderer (sets MUJOCO_GL). auto = egl on Linux "
+        "(headless NVIDIA GPU context -- glfw there lands on whatever the X display offers, which "
+        "on a server-GPU box is Mesa llvmpipe, i.e. CPU rendering, ~1s per 3-camera frame vs ~7ms "
+        "on EGL), glfw elsewhere (Windows/macOS: the driver's default GPU). An explicit MUJOCO_GL "
+        "env var wins over auto. Only affects the camera renderer -- the passive viewer always uses "
+        "its own GLFW window.",
+    )
+    parser.add_argument(
+        "--egl-device", type=int, default=None,
+        help="with the egl backend: GPU index to render on (sets MUJOCO_EGL_DEVICE_ID; default: "
+        "first usable device).",
+    )
+
+
+def _configure_gl_backend() -> None:
+    """Must run before `import mujoco` -- mujoco.Renderer's GL context
+    picks its backend from MUJOCO_GL at import time, so this pre-parses
+    just --gl-backend/--egl-device out of argv (main()'s parser declares
+    them again for --help)."""
+    pre = argparse.ArgumentParser(add_help=False)
+    _gl_backend_args(pre)
+    args, _ = pre.parse_known_args()
+    backend = args.gl_backend
+    if backend == "auto":
+        if "MUJOCO_GL" in os.environ:
+            backend = None
+        else:
+            backend = "egl" if sys.platform.startswith("linux") else None
+    if backend is not None:
+        os.environ["MUJOCO_GL"] = backend
+        if backend in ("egl", "osmesa"):
+            os.environ["PYOPENGL_PLATFORM"] = backend
+    if args.egl_device is not None:
+        os.environ["MUJOCO_EGL_DEVICE_ID"] = str(args.egl_device)
+
+
+_configure_gl_backend()
 
 import mujoco  # noqa: E402
 import mujoco.viewer  # noqa: E402
@@ -58,7 +101,11 @@ class CameraView:
     rendering, 3 cameras), vs ~1-20ms for a physics tick's own substeps,
     so calling it inline used to stall mj_step/viewer.sync() for however
     long the render took, every time it fired, no matter how low
-    --camera-hz was set. The render thread instead: (1) copies the main
+    --camera-hz was set. (That cost was the software rasterizer: on Linux
+    the default glfw backend lands on Mesa llvmpipe when the X display
+    isn't driven by the NVIDIA GPU. --gl-backend egl -- the Linux
+    default now -- renders on the GPU instead, ~7ms for the same 3
+    cameras; _report_gl_renderer() prints which one you got.) The render thread instead: (1) copies the main
     loop's qpos/qvel into its OWN MjData under a short lock (cheap, just a
     numpy copy -- concurrently reading the main loop's live MjData while
     mj_step writes to it would be a data race), (2) mj_forward()s that
@@ -124,6 +171,7 @@ class CameraView:
     def _render_loop(self, width: int, height: int, hz: float) -> None:
         own_data = mujoco.MjData(self.model)
         renderer = mujoco.Renderer(self.model, height=height, width=width)
+        _report_gl_renderer()
         interval = 1.0 / hz
         try:
             while not self._stop.is_set():
@@ -167,6 +215,30 @@ class CameraView:
         self._thread.join(timeout=2.0)
         if self._plt is not None:
             self._plt.close(self.fig)
+
+
+_SOFTWARE_GL = ("llvmpipe", "softpipe", "swrast", "gdi generic", "microsoft basic render")
+
+
+def _report_gl_renderer() -> None:
+    """Print which GL device the (current) camera-render context landed on,
+    and warn loudly if it's a software rasterizer -- the silent failure
+    mode this whole --gl-backend option exists for."""
+    try:
+        from OpenGL import GL
+        name = GL.glGetString(GL.GL_RENDERER)
+        name = name.decode() if isinstance(name, bytes) else str(name)
+    except Exception as exc:  # diagnostic only, never fatal
+        print(f"[mujoco_physics_process] camera GL renderer: unknown ({exc})")
+        return
+    backend = os.environ.get("MUJOCO_GL", "glfw (default)")
+    print(f"[mujoco_physics_process] camera GL renderer: {name} [MUJOCO_GL={backend}]")
+    if any(s in name.lower() for s in _SOFTWARE_GL):
+        print(
+            "[mujoco_physics_process] WARNING: camera rendering is on a SOFTWARE rasterizer (CPU). "
+            "Linux: use --gl-backend egl. Windows laptop: set python.exe to 'High performance' "
+            "in Settings > System > Display > Graphics."
+        )
 
 
 def _max_tracking_error_deg(model: mujoco.MjModel, data: mujoco.MjData, writer: MujocoJointWriter):
@@ -225,14 +297,16 @@ def main() -> None:
         help="camera render rate, independent of --hz. Rendering runs on CameraView's own background "
         "thread now (not the physics/viewer loop), so this no longer stalls physics -- it just caps "
         "how current the camera images are. Kept low by default anyway since rendering is still "
-        "expensive per call (~100-400ms for 3 cameras, CPU/software rendering) and that thread can't "
-        "render faster than that regardless of this setting.",
+        "expensive per call when it ends up on a software rasterizer (~100-1000ms for 3 cameras) and "
+        "that thread can't render faster than that regardless of this setting. On a GPU context "
+        "(see --gl-backend) it's ~7ms, so this can go much higher.",
     )
     parser.add_argument(
         "--no-wrist-cameras", action="store_true",
         help="with --show-cameras/--capture-cameras, render only cam_head and skip cam_left_wrist/"
         "cam_right_wrist -- cuts render cost roughly to a third since it's ~linear in camera count.",
     )
+    _gl_backend_args(parser)
     args = parser.parse_args()
 
     robot_mjcf = actuated_mjcf_path(_URDF)  # scene.xml's <include> needs this file to already exist on disk

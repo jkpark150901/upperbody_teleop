@@ -140,9 +140,13 @@
                       elastic2d="both"
                       damping="1e-2"/>
       </flexcomp> -->
+      <!-- 7x7 grid (72 tris), was 13x13 (288 tris): same 0.36m patch, coarser
+           mesh. Measured physics tick (8 substeps @ 60Hz): 13x13 63.9ms
+           (~16Hz max), 9x9 30.1ms, 7x7 13.9ms (~72Hz max), 5x5 3.5ms.
+           selfcollide is most of the remaining cost (7x7 with "none": 4.4ms). -->
       <flexcomp type="grid"
-          count="13 13 1"
-          spacing="0.03 0.03 0.03"
+          count="7 7 1"
+          spacing="0.06 0.06 0.06"
           pos="0.65 0 0.045"
           radius="0.002"
           mass="0.1"
