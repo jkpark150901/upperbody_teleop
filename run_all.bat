@@ -51,5 +51,5 @@ start "1: hand_process" cmd /k "call "%CONDA_ROOT%\Scripts\activate.bat" %ENV_NA
 
 start "2: mocap_process" cmd /k "call "%CONDA_ROOT%\Scripts\activate.bat" %ENV_NAME% && cd /d "%PROJECT_ROOT%" && python -m scripts.mocap_process --port 7002 --send udp://127.0.0.1:6100"
 
-start "3: mujoco_physics_process" cmd /k "call "%CONDA_ROOT%\Scripts\activate.bat" %ENV_NAME% && cd /d "%PROJECT_ROOT%" \ && python -m scripts.mujoco_physics_process --port 6100"
-start "3: mujoco_physics_process" cmd /k "call "%CONDA_ROOT%\Scripts\activate.bat" %ENV_NAME% && cd /d "%PROJECT_ROOT%" \ && python -m scripts.mujoco_physics_process --port 6100 --capture-cameras --no-wrist-cameras"
+@REM  start "3: mujoco_physics_process" cmd /k "call "%CONDA_ROOT%\Scripts\activate.bat" %ENV_NAME% && cd /d "%PROJECT_ROOT%" \ && python -m scripts.mujoco_physics_process --port 6100"
+start "3: mujoco_physics_process" cmd /k "call "%CONDA_ROOT%\Scripts\activate.bat" %ENV_NAME% && cd /d "%PROJECT_ROOT%" \ && python -m scripts.mujoco_physics_process --port 6100 --capture-cameras --show-cameras --camera-hz 3 --diagnose-latency"

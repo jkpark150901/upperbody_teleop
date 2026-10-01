@@ -171,15 +171,22 @@
       </geometry>
     </visual>
     <!-- Camera housing marker (rough box, not a measured real camera),
-         mirroring the cam_right_wrist camera that
-         robot_hand/mujoco_urdf.py's _build_actuated_spec() adds
-         programmatically to the compiled MJCF; added here too so the raw
-         URDF itself shows it (any URDF viewer, robot_hand/urdf_fk.py's
-         own tree, vedo scripts), not just the MuJoCo-specific pipeline. -->
+         mirroring cam_right_wrist. Attached here (link_right_arm_6)
+         rather than right_hand_rl_dg_base, which is where it belongs
+         logically, past the wrist's fixed mount joint, because a
+         mujoco.MjSpec serialization quirk silently drops that body on
+         this side only when a camera is added to it via spec.body()
+         (see robot_hand/mujoco_urdf.py's camera-adding comment for the
+         full story); pos/rpy below are that same hand-base placement
+         pre-composed through the fixed arm_6->mount->base chain instead.
+         Local +X is still the dorsal (back-of-hand) direction here (a
+         180deg-about-X rotation doesn't touch X); local -Z (not +Z) is
+         the fingers direction on THIS link, since that same rotation
+         flips Z. -->
     <visual>
-      <origin xyz="0.03 0 0" rpy="0 0 0" />
+      <origin xyz="0.05 0 -0.1527" rpy="0 0 0" />
       <geometry>
-        <box size="0.03 0.04 0.024" />
+        <box size="0.024 0.04 0.03" />
       </geometry>
       <material name="camera_housing">
         <color rgba="0.1 0.1 0.6 1" />
@@ -305,11 +312,11 @@
         <mesh filename="rby1/rby1ub_src/urdf/meshes/LINK_20.dae" />
       </geometry>
     </visual>
-    <!-- Camera housing marker, see link_right_arm_6's identical block above. -->
+    <!-- Camera housing marker, see link_right_arm_6's identical block. -->
     <visual>
-      <origin xyz="0.03 0 0" rpy="0 0 0" />
+      <origin xyz="0.05 0 -0.1527" rpy="0 0 0" />
       <geometry>
-        <box size="0.03 0.04 0.024" />
+        <box size="0.024 0.04 0.03" />
       </geometry>
       <material name="camera_housing">
         <color rgba="0.1 0.1 0.6 1" />

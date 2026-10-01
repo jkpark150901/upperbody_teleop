@@ -275,14 +275,69 @@ def _build_actuated_spec(
     # bvh_upper_body_mapping.md) with +Z (up) as the camera's own +Y,
     # i.e. upright and forward-facing regardless of which of the three
     # links it's on.
-    for cam_name, link_name in (
-        ("cam_head", "link_head_2"),
-        ("cam_left_wrist", "link_left_arm_6"),
-        ("cam_right_wrist", "link_right_arm_6"),
+    # cam_head is pitched 45deg down from the level forward-facing pose
+    # (user wants it looking down at the workspace/table, not straight
+    # ahead) -- rotating the level xyaxes' y-axis (+Z, up) by 45deg about
+    # the mount's local Y keeps the x-axis (left/right, -Y) unchanged
+    # since that axis isn't touched by a pitch-about-Y rotation, and
+    # tilts forward+up together: new forward = (cos45, 0, -sin45),
+    # new up = (sin45, 0, cos45).
+    _COS45 = _SIN45 = 0.70710678
+    # pos.x=0.06, not the housing box's own front face (x=0.045, box
+    # half-size 0.015 centered at x=0.03) -- the camera used to sit right
+    # ON that face, so the box itself entered the lower half of the frame
+    # once cam_head got pitched down (confirmed by rendering: the bottom
+    # third of the image was solid, not sky/floor). This pushes the
+    # camera 1.5cm clear of the box on all three mounts.
+    #
+    # The wrist cameras *logically* belong on *_hand_*_dg_base (the DG5F
+    # hand's own base link, past the wrist's fixed mount joint), aimed
+    # down the fingers with "up" toward the back of the hand (dorsal
+    # side) -- that local frame was solved from FK (not guessed): at
+    # qpos0, base->fingertip vectors land almost entirely on local +Z
+    # (confirmed on both hands, all 5 fingertips each), and the index/etc.
+    # flexion joints' own axis (<axis xyz="1 0 0"/> on left_hand_lj_dg_2_1
+    # etc., in the palm's frame, same orientation as base) is local X --
+    # that's the palmar/dorsal axis by construction (a flexion joint spins
+    # around the axis perpendicular to the palm), and all 5 fingertips sit
+    # at a small but consistent +X offset from base, i.e. local +X is the
+    # dorsal side.
+    #
+    # BUT actually attaching a <camera> there via spec.body(name) hit a
+    # real mujoco.MjSpec bug: calling spec.to_xml() on this spec (done
+    # once, in actuated_mjcf_path, after this function returns) silently
+    # dropped the *_hand_rl/ll_dg_mount/base bodies from the serialized
+    # XML on one side (confirmed: a from-scratch repro of spec.body(name)
+    # + add_camera() on both sides, then one to_xml(), lost BOTH sides'
+    # mount/base bodies; adding this function's actuators/excludes first
+    # made the left side survive and only the right vanish -- some
+    # uncompiled-spec serialization quirk, order/reference-dependent, not
+    # a left/right distinction). The dropped-body's camera then got
+    # silently reparented wherever MuJoCo's compiler fuses it to instead,
+    # which is NOT guaranteed to preserve local-frame semantics the way
+    # compiling actually fuses two *rigid*, already-numeric bodies, hence
+    # cam_right_wrist pointing at the torso instead of the fingers.
+    #
+    # Fix: attach both wrist cameras to link_{left,right}_arm_6 instead
+    # (confirmed reliably present in to_xml() output on both sides), with
+    # pos/xyaxes pre-composed through the fixed arm_6->mount->base chain
+    # (translate (0,0,-0.1087), rotate 180deg about X, then translate
+    # (0,0,0.004), no further rotation -- both hands use numerically
+    # identical origins for this chain) so the camera still behaves as if
+    # it were mounted on the hand base: local +X stays dorsal (unaffected
+    # by a 180-about-X rotation), local +Z (fingers) becomes arm_6's own
+    # local -Z. pos=(0.05,0,0.04) in base-local (0.05 clears the dorsal
+    # surface -- ll_dg_base.dae's own vertex bbox is x:[-0.039,0.039]
+    # y:[-0.046,0.045] z:[-0.012,0.099] -- 0.04 is that length's midpoint)
+    # becomes (0.05,0,-0.1527) in arm_6-local.
+    for cam_name, link_name, pos, xyaxes in (
+        ("cam_head", "link_head_2", [0.06, 0.0, 0.0], [0.0, -1.0, 0.0, _SIN45, 0.0, _COS45]),
+        ("cam_left_wrist", "link_left_arm_6", [0.05, 0.0, -0.1527], [0.0, -1.0, 0.0, 1.0, 0.0, 0.0]),
+        ("cam_right_wrist", "link_right_arm_6", [0.05, 0.0, -0.1527], [0.0, -1.0, 0.0, 1.0, 0.0, 0.0]),
     ):
         spec.body(link_name).add_camera(
-            name=cam_name, pos=[0.045, 0.0, 0.0],
-            xyaxes=[0.0, -1.0, 0.0, 0.0, 0.0, 1.0],
+            name=cam_name, pos=pos,
+            xyaxes=xyaxes,
             fovy=60.0,
         )
 
