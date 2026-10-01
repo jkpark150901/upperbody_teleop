@@ -47,9 +47,9 @@ set CONDA_ROOT=C:\Users\admin\miniforge3
 set ENV_NAME=upperbody_teleop
 set PROJECT_ROOT=%~dp0
 
-start "1: hand_process" cmd /k "call "%CONDA_ROOT%\Scripts\activate.bat" %ENV_NAME% && cd /d "%PROJECT_ROOT%" && python -m scripts.hand_process --quest-host 192.168.8.156 --quest-port 5005 --send udp://127.0.0.1:6100  --hand-retargeter anydex --anydex-config-left configs/anydex/dg5f_left_adaptive_quest3.yaml --anydex-config-right configs/anydex/dg5f_right_adaptive_quest3.yaml"
+start "1: hand_process" cmd /k "call "%CONDA_ROOT%\Scripts\activate.bat" %ENV_NAME% && cd /d "%PROJECT_ROOT%" && python -m scripts.hand_process --quest-host 192.168.8.156 --quest-port 5005 --send udp://192.168.8.156:6100  --hand-retargeter anydex --anydex-config-left configs/anydex/dg5f_left_adaptive_quest3.yaml --anydex-config-right configs/anydex/dg5f_right_adaptive_quest3.yaml"
 
-start "2: mocap_process" cmd /k "call "%CONDA_ROOT%\Scripts\activate.bat" %ENV_NAME% && cd /d "%PROJECT_ROOT%" && python -m scripts.mocap_process --port 7002 --send udp://127.0.0.1:6100"
+start "2: mocap_process" cmd /k "call "%CONDA_ROOT%\Scripts\activate.bat" %ENV_NAME% && cd /d "%PROJECT_ROOT%" && python -m scripts.mocap_process --port 7002 --send udp://192.168.8.156:6100"
 
 @REM  start "3: mujoco_physics_process" cmd /k "call "%CONDA_ROOT%\Scripts\activate.bat" %ENV_NAME% && cd /d "%PROJECT_ROOT%" \ && python -m scripts.mujoco_physics_process --port 6100"
 start "3: mujoco_physics_process" cmd /k "call "%CONDA_ROOT%\Scripts\activate.bat" %ENV_NAME% && cd /d "%PROJECT_ROOT%" \ && python -m scripts.mujoco_physics_process --port 6100 --capture-cameras --show-cameras --camera-hz 3 --diagnose-latency"
