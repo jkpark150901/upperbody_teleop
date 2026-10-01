@@ -37,8 +37,11 @@ REM   --diagnose-latency                          print network vs. actuator-tra
 REM   --show-cameras                              open a window with cam_head/cam_left_wrist/cam_right_wrist
 REM                                                (implies --capture-cameras)
 REM   --capture-cameras                           render cameras headlessly (no window) for a future capture loop
-REM   --camera-hz FLOAT                            camera render rate (default 3 -- each render is a ~100-400ms
-REM                                                stall of the physics/viewer loop, see script docstring)
+REM   --camera-hz FLOAT                            camera render rate (default 3; renders on its own thread --
+REM                                                ~7ms/frame on GPU, ~100-1000ms if it fell back to software GL)
+REM   --gl-backend {auto,egl,glfw,osmesa}          camera renderer GL backend (auto: egl on Linux, glfw on Windows);
+REM                                                startup log prints "camera GL renderer: ..." -- check it is your GPU
+REM   --egl-device INT                             with egl: GPU index to render on
 REM   --no-wrist-cameras                           with --show/--capture-cameras, render only cam_head
 REM
 REM press R inside the viewer window (process 3) to reset robot pose + cloth to initial state.
