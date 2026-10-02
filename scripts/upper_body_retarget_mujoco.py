@@ -57,7 +57,9 @@ from devices.quest_hand.quest_hand_reader import XR_WRIST  # noqa: E402
 from robot_hand.anydex_retarget import AnyDexDg5fRetargeter  # noqa: E402
 from robot_hand.hand_retarget import Dg5fHandRetargeter  # noqa: E402
 from robot_hand.mujoco_urdf import build_actuated_model, mujoco_compatible_urdf  # noqa: E402
-from robot_hand.upper_body_retarget import RBY1UpperBodyRetargeter  # noqa: E402
+from robot_hand.upper_body_retarget import (  # noqa: E402
+    RBY1UpperBodyRetargeter, _HAND_MOUNT_ROTATION, _unit,
+)
 from robot_hand.urdf_fk import load_urdf  # noqa: E402
 from scripts.upper_body_retarget_vedo import (  # noqa: E402
     _HAND_JOINT_PREFIX,
@@ -84,7 +86,42 @@ _QUEST_TO_ROBOT = np.array([
     [0.0, 0.0, -1.0],
     [-1.0, 0.0, 0.0],
     [0.0, 1.0, 0.0],
-])
+])  # fixed, hardware-confirmed mapping -- a per-session version derived from the captured wrists'
+# left-right spread (replacing this) was tried and reverted: it broke hand ORIENTATION (confirmed
+# on real hardware), since _QUEST_WRIST_FINGERS_LOCAL/_QUEST_WRIST_DORSAL_LOCAL were tuned against
+# THIS fixed matrix specifically, not a session-varying one. Position/reach-direction instead gets
+# its "where did the operator actually reach" fix from the head-pose-anchored offset in
+# QuestForwardCalibration (base_handbase_head) -- the rotation path stays on this fixed matrix.
+
+# OpenXR hand-tracking's wrist joint local axes -- confirmed on real
+# hardware (same empirical process as robot_hand/upper_body_retarget.py's
+# _BVH_HAND_FINGERS_LOCAL/_BVH_HAND_DORSAL_LOCAL, see bvh_upper_body_
+# mapping.md), through two rounds of correction: fingers is local -Z (the
+# rendered hand pointed exactly opposite the tracked hand's fingers with
+# +Z), dorsal is local -Y (same symptom -- the rendered hand's back faced
+# opposite the tracked hand's). Local +X stayed "right" (when the dorsal
+# side faces up) throughout, unflipped. Same for both hands -- OpenXR
+# already tracks left/right as separate skeletons, unlike BVH's single
+# mirrored rig, so no left/right sign flip needed here the way
+# _BVH_HAND_FINGERS_LOCAL has one.
+_QUEST_WRIST_FINGERS_LOCAL = {"left": np.array([0.0, 0.0, -1.0]), "right": np.array([0.0, 0.0, -1.0])}
+_QUEST_WRIST_DORSAL_LOCAL = np.array([0.0, -1.0, 0.0])
+
+# Calibration scale safety margin (see QuestForwardCalibration.update()):
+# the operator's calibrated max reach maps to this fraction of the
+# robot's own max reach, not 100% of it, so reaching exactly as far as
+# calibration doesn't land right on the joint-limit/reachability boundary.
+_SCALE_SAFETY_MARGIN = 0.95
+
+# link_{side}_arm_6 -> the DG5F hand's own base link, expressed in arm_6's
+# own local frame: translate (0,0,-0.1087) then rotate 180deg about X
+# (left/right_hand_mount's fixed joint), then translate (0,0,0.004) (the
+# dg_base fixed joint, no further rotation) -- composed: a point at the
+# hand base's origin sits at local (0,0,-0.1127) in arm_6's frame (same
+# derivation and number as robot_hand/mujoco_urdf.py's wrist-camera
+# placement). Used to convert between "arm_6 pose" and "hand base pose"
+# in QuestForwardCalibration -- see its __init__/wrist_target.
+_ARM6_TO_HANDBASE_OFFSET = np.array([0.0, 0.0, -0.1127])
 
 
 def _quat_xyzw_to_matrix(q: np.ndarray) -> np.ndarray:
@@ -104,24 +141,96 @@ def _quat_xyzw_to_matrix(q: np.ndarray) -> np.ndarray:
 
 
 class QuestForwardCalibration:
-    """Forward-reach reference for --backend quest.
+    """Forward-reach reference for --backend quest / hand_process.py's
+    --arm-ik quest.
 
     A terminal command schedules capture a few seconds later, so the operator
     can type Enter, put both hands straight forward in view, and let that
-    frame become the neutral pose. Wrist deltas are remapped into the RBY1
-    frame, scaled by robot-vs-human wrist span in that forward pose, and wrist
-    rotation is applied as a delta from the captured orientation.
+    frame become the neutral pose. Wrist POSITION is tracked as a delta from
+    that captured pose (remapped into the RBY1 frame), scaled PER ARM so the
+    operator's own max reach at calibration maps to the robot's own max
+    hand-base reach (robot_reach_limit, see _quest_reach_limits) -- not the
+    earlier version's robot-vs-human WRIST SPAN (distance between the two
+    captured wrists), which conflated "how far apart are my hands" with
+    "how far can my arm reach" and had no principled relationship to
+    whether the robot could actually cover the operator's range of motion.
+    Wrist ORIENTATION is not delta-tracked at all: an earlier delta-from-
+    calibration version here (conjugating a captured-relative rotation delta
+    by _QUEST_TO_ROBOT, mirroring how robot_hand/upper_body_retarget.py's
+    _wrist_rotation_target USED to work) turned out to never actually move
+    the robot's wrist (confirmed not just slow/wrong but completely static
+    regardless of hand rotation). _wrist_rotation_target was already
+    rewritten once to fix the exact same failure mode for BVH/mocap (see its
+    own docstring: that delta-conjugation approach "is only valid if the
+    [source]'s own local rest frame happens to line up with [the alignment
+    matrix]", which a one-time calibration capture doesn't guarantee) --
+    wrist_target() below applies that same fix here: track the Quest wrist's
+    current ABSOLUTE fingers/dorsal directions every frame (via
+    _QUEST_WRIST_FINGERS_LOCAL/_QUEST_WRIST_DORSAL_LOCAL) instead of a delta
+    from one captured frame.
     """
 
-    def __init__(self, base_wrist: Dict[str, np.ndarray], base_rotation: Dict[str, np.ndarray]):
+    def __init__(
+        self, base_wrist: Dict[str, np.ndarray], base_rotation: Dict[str, np.ndarray],
+        robot_reach_limit: Dict[str, float], head_pose: tuple[np.ndarray, np.ndarray],
+        smoothing_factor: float = 1.0,
+    ):
         self.base_wrist = base_wrist
         self.base_rotation = base_rotation
+        self.robot_reach_limit = robot_reach_limit
+        # Low-pass filter on the live wrist target (position delta, and the
+        # fingers/dorsal direction vectors that orientation is built from),
+        # ported from refer/HapticSyncController.cs's own smoothingFactor
+        # (Vector3.Lerp / Quaternion.Slerp each frame -- "lower is
+        # smoother"; 1.0 = no smoothing, matches this project's prior
+        # behavior exactly). Reset per side on every (re)calibration (see
+        # update()) so a new session doesn't start by smoothing toward a
+        # stale direction from the last one.
+        self.smoothing_factor = smoothing_factor
+        self._filtered_delta_pos: Dict[str, np.ndarray] = {}
+        self._filtered_fingers: Dict[str, np.ndarray] = {}
+        self._filtered_dorsal: Dict[str, np.ndarray] = {}
+        # The head camera's own fixed world pose (link_head_2 -- no head
+        # DOF on this robot, see module docstring, so this never changes
+        # once read) -- all wrist-target position math below runs in THIS
+        # frame instead of the robot root's world frame, per request: a
+        # reach target expressed relative to where the robot is actually
+        # looking from is the more meaningful "origin" for a camera-driven
+        # task than an arbitrary torso-attached world frame, and is also
+        # what any future camera-relative training-data use would want.
+        # Converted back to world only at the very end of wrist_target(),
+        # since solve_wrist_pose()/the URDF tree's own FK still operate in
+        # world/root frame regardless.
+        self.head_pos, self.head_rot = head_pose
+        # base_wrist/base_rotation (from _quest_forward_reference) are
+        # link_{side}_arm_6's own pose -- the bare wrist joint, NOT where
+        # the DG5F hand physically sits (confirmed: targeting arm_6
+        # directly put the whole hand ~11cm further from the body than
+        # intended, since that's the fixed arm_6->hand-base offset along
+        # the forearm -- see robot_hand/mujoco_urdf.py's camera-placement
+        # comment for the same 0.1127m number derived the same way).
+        # wrist_target() needs to reason in HAND BASE space (the Quest
+        # wrist marker corresponds to roughly where the user's hand base
+        # is, not their forearm bone), then convert back to an arm_6
+        # target at the end -- base_handbase is that space's own
+        # calibration-pose reference point, computed once here.
+        # p_handbase = p_arm6 + R_arm6 @ offset -- verified numerically via
+        # direct FK (link_left_arm_6 vs left_hand_ll_dg_base), not just
+        # derived by hand: offset's own value is exactly R_arm6.T @
+        # (p_handbase - p_arm6).
+        base_handbase_world = {
+            side: base_wrist[side] + base_rotation[side] @ _ARM6_TO_HANDBASE_OFFSET
+            for side in ("left", "right")
+        }
+        self.base_handbase_head = {
+            side: self.head_rot.T @ (base_handbase_world[side] - self.head_pos)
+            for side in ("left", "right")
+        }
         self.quest_wrist: Dict[str, np.ndarray] = {}
-        self.quest_rotation: Dict[str, np.ndarray] = {}
-        self.scale = 1.0
+        self.scale: Dict[str, float] = {"left": 1.0, "right": 1.0}
         self.ready = False
         self.capture_at: float | None = None
-        self.prompted = False
+        self._last_prompt_t = 0.0
 
     @staticmethod
     def _wrist_pos(sample) -> np.ndarray:
@@ -131,22 +240,37 @@ class QuestForwardCalibration:
     def _wrist_rot(sample) -> np.ndarray:
         return _quat_xyzw_to_matrix(np.asarray(sample.raw["xr_joints"][XR_WRIST, 3:], dtype=float))
 
+    def _filter_vec(self, state: Dict[str, np.ndarray], side: str, raw: np.ndarray) -> np.ndarray:
+        """Lerp(state[side], raw, smoothing_factor), first-call passthrough
+        (no prior value to blend from yet) -- the vector version of
+        HapticSyncController.cs's Vector3.Lerp(filtered, raw, smoothingFactor)."""
+        prev = state.get(side)
+        filtered = raw.copy() if prev is None else prev + self.smoothing_factor * (raw - prev)
+        state[side] = filtered
+        return filtered
+
     def request_capture(self, delay_s: float = 3.0) -> None:
         self.capture_at = time.monotonic() + delay_s
         print(
-            f"[upper_body_mujoco] Quest forward-pose calibration requested; "
-            f"extend both arms 90deg straight forward with the backs of the hands up; "
-            f"capture in {delay_s:.1f}s"
+            f"[quest_calibration] capture requested; extend both arms 90deg straight forward "
+            f"with the backs of the hands up; capturing in {delay_s:.1f}s"
         )
 
     def update(self, last_hand: Dict[str, object], now: float) -> bool:
         if self.capture_at is None:
-            if not self.ready and not self.prompted:
-                self.prompted = True
+            # Was a one-shot print (self.prompted) -- confirmed the hard
+            # way that's too easy to miss: this console window also prints
+            # Quest connection stats on its own timer, which scrolls the
+            # single calibration reminder off-screen within a few seconds,
+            # so an operator who didn't catch it in that first window has
+            # no later cue that nothing will happen until they type 'c'.
+            # Repeats every 10s instead, until actually calibrated.
+            if not self.ready and now - self._last_prompt_t > 10.0:
+                self._last_prompt_t = now
                 print(
-                    "[upper_body_mujoco] type 'c' or 'calibrate' then Enter to capture "
-                    "Quest forward-pose calibration after 3 seconds "
-                    "(arms forward 90deg, backs of hands up)"
+                    "[quest_calibration] NOT YET CALIBRATED -- type 'c' or 'calibrate' then Enter "
+                    "to capture forward-pose calibration after 3 seconds "
+                    "(arms forward 90deg, backs of hands up). Nothing moves until this is done."
                 )
             return self.ready
 
@@ -157,31 +281,104 @@ class QuestForwardCalibration:
         if not all(_is_quest_hand(last_hand.get(side)) for side in ("left", "right")):
             self.capture_at = None
             print(
-                "[upper_body_mujoco] calibration skipped: both Quest hands must be tracked "
+                "[quest_calibration] skipped: both Quest hands must be tracked "
                 "at capture time. Type 'c' to try again."
             )
             return self.ready
 
         self.quest_wrist = {side: self._wrist_pos(last_hand[side]).copy() for side in ("left", "right")}
-        self.quest_rotation = {side: self._wrist_rot(last_hand[side]).copy() for side in ("left", "right")}
-        quest_span = np.linalg.norm(_QUEST_TO_ROBOT @ (self.quest_wrist["left"] - self.quest_wrist["right"]))
-        robot_span = np.linalg.norm(self.base_wrist["left"] - self.base_wrist["right"])
-        self.scale = float(robot_span / quest_span) if quest_span > 1e-6 else 1.0
+        self._filtered_delta_pos = {}
+        self._filtered_fingers = {}
+        self._filtered_dorsal = {}
+        # Per-arm scale: the operator's own reach at this capture -- the
+        # straight-line (Euclidean) distance of the captured wrist pose's
+        # own translation, i.e. norm(quest_wrist[side]) in OpenXR
+        # LocalSpace -- mapped onto the robot's own max hand-base reach
+        # (robot_reach_limit, see _quest_reach_limits), times a small
+        # safety margin (_SCALE_SAFETY_MARGIN) so the mapped target stays
+        # strictly inside the robot's reach even at the operator's exact
+        # calibrated extension, not right on the boundary where closed-
+        # form IK can still exist but joint-limit clipping starts biting.
+        # e.g. operator reaches 1.0m, robot's own max is 0.5m -> scale
+        # ~0.475, so the operator's own full extension maps to just inside
+        # the robot's own full extension, same direction, just resized.
+        #
+        # LocalSpace's origin is an arbitrary anchor near wherever the
+        # headset app started (see devices/quest_hand/quest_hand_reader.py's
+        # own packet-format docstring) -- but that start-up pose error is
+        # NOT something this needs to correct for: both the calibration
+        # capture AND every live sample are read from the SAME LocalSpace,
+        # so norm(quest_wrist[side]) consistently means "distance from
+        # wherever the headset considers its own origin" either way, and
+        # the live delta_pos_world below (wrist_pos - quest_wrist[side])
+        # is already origin-independent (a pure difference) regardless.
+        quest_reach = {side: float(np.linalg.norm(self.quest_wrist[side])) for side in ("left", "right")}
+        self.scale = {
+            side: float(_SCALE_SAFETY_MARGIN * self.robot_reach_limit[side] / quest_reach[side])
+            if quest_reach[side] > 1e-6 else 1.0
+            for side in ("left", "right")
+        }
         self.ready = True
         self.capture_at = None
         print(
-            "[upper_body_mujoco] Quest forward-pose calibrated: "
-            f"robot_span={robot_span:.3f}m quest_span={quest_span:.3f}m auto_scale={self.scale:.3f}"
+            "[quest_calibration] CALIBRATED: "
+            + ", ".join(
+                f"{side}: quest_reach={quest_reach[side]:.3f}m robot_reach={self.robot_reach_limit[side]:.3f}m "
+                f"scale={self.scale[side]:.3f}"
+                for side in ("left", "right")
+            )
         )
         return True
 
     def wrist_target(self, side: str, sample, scale_multiplier: float) -> tuple[np.ndarray, np.ndarray]:
+        """Position: delta from the captured calibration pose, tracked in
+        HAND BASE space (base_handbase, see __init__) since that's what the
+        Quest wrist marker conceptually corresponds to -- then converted
+        back to an arm_6 target at the end (what solve_wrist_pose actually
+        expects), using the offset rotated by THIS frame's own target
+        orientation, not the calibration-time one (the offset direction
+        rotates with the wrist). Orientation: the Quest wrist's current
+        ABSOLUTE fingers/dorsal directions, transformed into robot-frame and
+        composed with the URDF's fixed wrist-mount offset -- same structure
+        as robot_hand/upper_body_retarget.py's _wrist_rotation_target, see
+        this class's docstring for why NOT a delta from calibration. This
+        (target_rot) is already arm_6's own intended orientation (it's built
+        from _HAND_MOUNT_ROTATION the same way _wrist_rotation_target's
+        result is matched against link_arm_6, not the hand itself), so it
+        needs no further conversion -- only position does."""
         wrist_pos = self._wrist_pos(sample)
+        delta_pos_world = _QUEST_TO_ROBOT @ (wrist_pos - self.quest_wrist[side])
+        delta_pos_world = self._filter_vec(self._filtered_delta_pos, side, delta_pos_world)
+        # Head-camera frame throughout (base_handbase_head, see __init__),
+        # not robot-root world frame -- delta_pos_world is in world-AXIS
+        # directions (from _QUEST_TO_ROBOT), so it still needs rotating
+        # into the head's own frame before adding to a head-frame point;
+        # converted back to world only at the very end, for solve_wrist_
+        # pose()'s own FK (which is root/world-frame, unaffected by this).
+        delta_pos_head = self.head_rot.T @ delta_pos_world
+        target_pos_handbase_head = (
+            self.base_handbase_head[side] + scale_multiplier * self.scale[side] * delta_pos_head
+        )
+        target_pos_handbase = self.head_pos + self.head_rot @ target_pos_handbase_head
+
         wrist_rot = self._wrist_rot(sample)
-        delta_pos = _QUEST_TO_ROBOT @ (wrist_pos - self.quest_wrist[side])
-        target_pos = self.base_wrist[side] + scale_multiplier * self.scale * delta_pos
-        delta_rot = self.quest_rotation[side].T @ wrist_rot
-        target_rot = self.base_rotation[side] @ (_QUEST_TO_ROBOT @ delta_rot @ _QUEST_TO_ROBOT.T)
+        fingers_world = _unit(_QUEST_TO_ROBOT @ (wrist_rot @ _QUEST_WRIST_FINGERS_LOCAL[side]))
+        dorsal_world = _QUEST_TO_ROBOT @ (wrist_rot @ _QUEST_WRIST_DORSAL_LOCAL)
+        # nlerp (normalized lerp), not slerp -- a cheaper approximation
+        # that's fine at the small per-frame angle steps this smooths
+        # (same role as HapticSyncController.cs's Quaternion.Slerp on the
+        # wrist's rotation delta); re-orthogonalized below either way.
+        fingers_world = _unit(self._filter_vec(self._filtered_fingers, side, fingers_world))
+        dorsal_world = self._filter_vec(self._filtered_dorsal, side, dorsal_world)
+        dorsal_world = _unit(dorsal_world - np.dot(dorsal_world, fingers_world) * fingers_world)
+        third_world = np.cross(fingers_world, dorsal_world)  # local +Y, keeps (dorsal, +Y, fingers) right-handed
+        palm_target = np.empty((3, 3))
+        palm_target[:, 0] = dorsal_world
+        palm_target[:, 1] = third_world
+        palm_target[:, 2] = fingers_world
+        target_rot = palm_target @ _HAND_MOUNT_ROTATION
+
+        target_pos = target_pos_handbase - target_rot @ _ARM6_TO_HANDBASE_OFFSET
         return target_pos, target_rot
 
 
@@ -301,21 +498,29 @@ def _quest_forward_reference(retargeter: RBY1UpperBodyRetargeter) -> tuple[Dict[
         shoulder = poses[f"link_{side}_arm_0"].pos
         elbow = poses[f"link_{side}_arm_3"].pos
         wrist = poses[f"link_{side}_arm_6"].pos
-        reach = 0.9 * (np.linalg.norm(elbow - shoulder) + np.linalg.norm(wrist - elbow))
-        retargeter.solve_wrist(side, shoulder + np.array([reach, 0.0, 0.0]))
+        reach = 0.98 * (np.linalg.norm(elbow - shoulder) + np.linalg.norm(wrist - elbow))
+        # Use the same closed-form arm position solve as live Quest tracking.
+        # The old DLS-only solve_wrist() can settle into a low/downward local
+        # minimum even for this reachable forward target, which makes the
+        # post-calibration "arms forward" reference visibly droop.
+        retargeter.solve_wrist_closed_form(side, shoulder + np.array([reach, 0.0, 0.0]))
         poses = retargeter.poses()
 
     desired_palm_rotation = np.array([
         [0.0, 0.0, 1.0],  # local +Z (fingers) -> robot +X (forward)
         [0.0, 1.0, 0.0],  # local +Y -> robot +Y (left)
-        [1.0, 0.0, 0.0],  # local +X (back of hand) -> robot +Z (up)
+        [-1.0, 0.0, 0.0],  # local +X (palm normal in this model) -> robot -Z (palm down)
     ])
     palm_link = {"left": "left_hand_ll_dg_palm", "right": "right_hand_rl_dg_palm"}
     for side in ("left", "right"):
         wrist_link = f"link_{side}_arm_6"
         wrist_to_palm = poses[wrist_link].as_matrix().T @ poses[palm_link[side]].as_matrix()
         target_wrist_rotation = desired_palm_rotation @ wrist_to_palm.T
-        retargeter.solve_wrist_pose(side, poses[wrist_link].pos, target_wrist_rotation)
+        # Position is already solved above. Do only the wrist orientation
+        # block here; solve_wrist_pose() would run position IK a second time
+        # and can pick a different shoulder/elbow branch for the reference
+        # pose, making the start/reset pose visibly asymmetric.
+        retargeter._solve_wrist_orientation_block(side, target_wrist_rotation, retargeter.q.copy())
         poses = retargeter.poses()
     return (
         {side: poses[f"link_{side}_arm_6"].pos.copy() for side in ("left", "right")},
@@ -327,14 +532,23 @@ def _quest_reach_limits(
     retargeter: RBY1UpperBodyRetargeter,
     override_m: float | None = None,
 ) -> tuple[Dict[str, np.ndarray], Dict[str, float]]:
-    """Shoulder centers and max wrist radii for Quest wrist targets."""
+    """Shoulder centers and max wrist radii for Quest wrist targets --
+    "wrist" here means the DG5F hand base (what wrist_target()'s targets
+    actually are, see QuestForwardCalibration), so the straight-arm max
+    distance includes the fixed arm_6->hand-base offset
+    (_ARM6_TO_HANDBASE_OFFSET), not just the URDF's own upper+lower arm
+    segment lengths -- leaving it out previously meant both the live
+    reach-limit gate and the calibration scale (see QuestForwardCalibration.
+    update()) were using a ~11cm-short max reach number."""
     poses = retargeter.poses()
     shoulders = {side: poses[f"link_{side}_arm_0"].pos.copy() for side in ("left", "right")}
     limits = {}
+    handbase_offset_mag = float(np.linalg.norm(_ARM6_TO_HANDBASE_OFFSET))
     for side in ("left", "right"):
         upper = np.linalg.norm(retargeter.tree.joints[f"{side}_arm_3"].origin.pos)
         lower = np.linalg.norm(retargeter.tree.joints[f"{side}_arm_4"].origin.pos)
-        limits[side] = float(override_m if override_m is not None else 0.98 * (upper + lower))
+        max_reach = upper + lower + handbase_offset_mag
+        limits[side] = float(override_m if override_m is not None else 0.98 * max_reach)
     return shoulders, limits
 
 
@@ -584,7 +798,13 @@ def main() -> None:
     parser.add_argument(
         "--quest-max-reach", type=float, default=None,
         help="--backend quest only: max shoulder-to-wrist target radius in metres. "
-             "Default is 98%% of the URDF upper+lower arm length. Targets beyond this are ignored.",
+             "Default is 98%% of the URDF upper+lower arm length. Targets beyond this are clamped "
+             "onto that radius, same direction (ported from refer/HapticSyncController.cs).",
+    )
+    parser.add_argument(
+        "--wrist-smoothing", type=float, default=1.0,
+        help="--backend quest only: low-pass filter factor on the live wrist target, ported from "
+        "refer/HapticSyncController.cs's smoothingFactor. 1.0 = no smoothing (default).",
     )
     args = parser.parse_args()
     if args.backend == "replay" and args.replay_file is None:
@@ -630,7 +850,11 @@ def main() -> None:
     if args.backend == "quest":
         base_wrist, base_wrist_rotation = _quest_forward_reference(retargeter)
         quest_shoulder, quest_reach_limit = _quest_reach_limits(retargeter, args.quest_max_reach)
-        quest_calibration = QuestForwardCalibration(base_wrist, base_wrist_rotation)
+        head_pose_ref = retargeter.poses()["link_head_2"]
+        head_pose = (head_pose_ref.pos.copy(), head_pose_ref.as_matrix())
+        quest_calibration = QuestForwardCalibration(
+            base_wrist, base_wrist_rotation, quest_reach_limit, head_pose, args.wrist_smoothing,
+        )
         quest_calibration_commands = queue.SimpleQueue()
         _start_quest_calibration_console(quest_calibration_commands)
         print(
@@ -765,15 +989,20 @@ def main() -> None:
                     wrist_pos, wrist_rotation = quest_calibration.wrist_target(
                         side, sample, args.wrist_scale
                     )
-                    reach = float(np.linalg.norm(wrist_pos - quest_shoulder[side]))
+                    # Direction-preserving clamp onto the max-reach sphere
+                    # (ported from refer/HapticSyncController.cs's MaxRadius
+                    # clamp) instead of dropping the frame and holding the
+                    # previous pose.
+                    from_shoulder = wrist_pos - quest_shoulder[side]
+                    reach = float(np.linalg.norm(from_shoulder))
                     if reach > quest_reach_limit[side]:
                         if now - last_reach_warning[side] > 1.0:
                             last_reach_warning[side] = now
                             print(
-                                f"[upper_body_mujoco] {side} wrist target out of reach "
-                                f"({reach:.3f}m > {quest_reach_limit[side]:.3f}m); holding previous IK pose"
+                                f"[upper_body_mujoco] {side} wrist target clamped to max reach "
+                                f"({reach:.3f}m -> {quest_reach_limit[side]:.3f}m)"
                             )
-                        continue
+                        wrist_pos = quest_shoulder[side] + from_shoulder * (quest_reach_limit[side] / reach)
                     joints = retargeter.solve_wrist_pose(side, wrist_pos, wrist_rotation)
                 if joints is None:
                     continue

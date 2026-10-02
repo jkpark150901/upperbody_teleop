@@ -30,13 +30,21 @@ def rotmat_to_euler_xyz_deg(r: np.ndarray) -> np.ndarray:
 
 
 class SkeletonGraphWindow:
-    def __init__(self, title: str, joint_names: Sequence[str], edges: Sequence[Tuple[str, str]]):
+    def __init__(
+        self,
+        title: str,
+        joint_names: Sequence[str],
+        edges: Sequence[Tuple[str, str]],
+        *,
+        show_labels: bool = True,
+    ):
         import matplotlib
         matplotlib.use("TkAgg")
         import matplotlib.pyplot as plt
         self._plt = plt
         self.joint_names = list(joint_names)
         self.edges = list(edges)
+        self.show_labels = show_labels
 
         plt.ion()
         self.fig = plt.figure(title, figsize=(7, 7))
@@ -63,14 +71,15 @@ class SkeletonGraphWindow:
             p0, p1 = positions[a], positions[b]
             ax.plot([p0[0], p1[0]], [p0[1], p1[1]], [p0[2], p1[2]], c="steelblue", lw=1.5)
 
-        for name, p in zip(names, pts):
-            r = rotations.get(name)
-            if r is not None:
-                rx, ry, rz = rotmat_to_euler_xyz_deg(np.asarray(r))
-                text = f"{name}\n{p[0]:.3f},{p[1]:.3f},{p[2]:.3f}\n{rx:.0f},{ry:.0f},{rz:.0f}"
-            else:
-                text = f"{name}\n{p[0]:.3f},{p[1]:.3f},{p[2]:.3f}"
-            ax.text(p[0], p[1], p[2], text, size=6)
+        if self.show_labels:
+            for name, p in zip(names, pts):
+                r = rotations.get(name)
+                if r is not None:
+                    rx, ry, rz = rotmat_to_euler_xyz_deg(np.asarray(r))
+                    text = f"{name}\n{p[0]:.3f},{p[1]:.3f},{p[2]:.3f}\n{rx:.0f},{ry:.0f},{rz:.0f}"
+                else:
+                    text = f"{name}\n{p[0]:.3f},{p[1]:.3f},{p[2]:.3f}"
+                ax.text(p[0], p[1], p[2], text, size=6)
 
         ax.set_title("x,y,z (m) / rx,ry,rz (deg) per joint")
         center = pts.mean(axis=0)

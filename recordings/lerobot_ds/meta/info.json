@@ -1,0 +1,224 @@
+{
+  "codebase_version": "v3.0",
+  "robot_type": "rby1_dg5f",
+  "fps": 30,
+  "total_episodes": 2,
+  "total_frames": 11,
+  "total_tasks": 1,
+  "chunks_size": 1000,
+  "data_files_size_in_mb": 100,
+  "video_files_size_in_mb": 200,
+  "data_path": "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet",
+  "video_path": null,
+  "splits": {
+    "train": "0:2"
+  },
+  "features": {
+    "observation.state": {
+      "dtype": "float32",
+      "shape": [
+        58
+      ],
+      "names": [
+        "torso_hp",
+        "torso_5",
+        "right_arm_0",
+        "right_arm_1",
+        "right_arm_2",
+        "right_arm_3",
+        "right_arm_4",
+        "right_arm_5",
+        "right_arm_6",
+        "right_hand_rj_dg_1_1",
+        "right_hand_rj_dg_1_2",
+        "right_hand_rj_dg_1_3",
+        "right_hand_rj_dg_1_4",
+        "right_hand_rj_dg_2_1",
+        "right_hand_rj_dg_2_2",
+        "right_hand_rj_dg_2_3",
+        "right_hand_rj_dg_2_4",
+        "right_hand_rj_dg_3_1",
+        "right_hand_rj_dg_3_2",
+        "right_hand_rj_dg_3_3",
+        "right_hand_rj_dg_3_4",
+        "right_hand_rj_dg_4_1",
+        "right_hand_rj_dg_4_2",
+        "right_hand_rj_dg_4_3",
+        "right_hand_rj_dg_4_4",
+        "right_hand_rj_dg_5_1",
+        "right_hand_rj_dg_5_2",
+        "right_hand_rj_dg_5_3",
+        "right_hand_rj_dg_5_4",
+        "left_arm_0",
+        "left_arm_1",
+        "left_arm_2",
+        "left_arm_3",
+        "left_arm_4",
+        "left_arm_5",
+        "left_arm_6",
+        "left_hand_lj_dg_1_1",
+        "left_hand_lj_dg_1_2",
+        "left_hand_lj_dg_1_3",
+        "left_hand_lj_dg_1_4",
+        "left_hand_lj_dg_2_1",
+        "left_hand_lj_dg_2_2",
+        "left_hand_lj_dg_2_3",
+        "left_hand_lj_dg_2_4",
+        "left_hand_lj_dg_3_1",
+        "left_hand_lj_dg_3_2",
+        "left_hand_lj_dg_3_3",
+        "left_hand_lj_dg_3_4",
+        "left_hand_lj_dg_4_1",
+        "left_hand_lj_dg_4_2",
+        "left_hand_lj_dg_4_3",
+        "left_hand_lj_dg_4_4",
+        "left_hand_lj_dg_5_1",
+        "left_hand_lj_dg_5_2",
+        "left_hand_lj_dg_5_3",
+        "left_hand_lj_dg_5_4",
+        "head_0",
+        "head_1"
+      ]
+    },
+    "action": {
+      "dtype": "float32",
+      "shape": [
+        58
+      ],
+      "names": [
+        "torso_hp",
+        "torso_5",
+        "right_arm_0",
+        "right_arm_1",
+        "right_arm_2",
+        "right_arm_3",
+        "right_arm_4",
+        "right_arm_5",
+        "right_arm_6",
+        "right_hand_rj_dg_1_1",
+        "right_hand_rj_dg_1_2",
+        "right_hand_rj_dg_1_3",
+        "right_hand_rj_dg_1_4",
+        "right_hand_rj_dg_2_1",
+        "right_hand_rj_dg_2_2",
+        "right_hand_rj_dg_2_3",
+        "right_hand_rj_dg_2_4",
+        "right_hand_rj_dg_3_1",
+        "right_hand_rj_dg_3_2",
+        "right_hand_rj_dg_3_3",
+        "right_hand_rj_dg_3_4",
+        "right_hand_rj_dg_4_1",
+        "right_hand_rj_dg_4_2",
+        "right_hand_rj_dg_4_3",
+        "right_hand_rj_dg_4_4",
+        "right_hand_rj_dg_5_1",
+        "right_hand_rj_dg_5_2",
+        "right_hand_rj_dg_5_3",
+        "right_hand_rj_dg_5_4",
+        "left_arm_0",
+        "left_arm_1",
+        "left_arm_2",
+        "left_arm_3",
+        "left_arm_4",
+        "left_arm_5",
+        "left_arm_6",
+        "left_hand_lj_dg_1_1",
+        "left_hand_lj_dg_1_2",
+        "left_hand_lj_dg_1_3",
+        "left_hand_lj_dg_1_4",
+        "left_hand_lj_dg_2_1",
+        "left_hand_lj_dg_2_2",
+        "left_hand_lj_dg_2_3",
+        "left_hand_lj_dg_2_4",
+        "left_hand_lj_dg_3_1",
+        "left_hand_lj_dg_3_2",
+        "left_hand_lj_dg_3_3",
+        "left_hand_lj_dg_3_4",
+        "left_hand_lj_dg_4_1",
+        "left_hand_lj_dg_4_2",
+        "left_hand_lj_dg_4_3",
+        "left_hand_lj_dg_4_4",
+        "left_hand_lj_dg_5_1",
+        "left_hand_lj_dg_5_2",
+        "left_hand_lj_dg_5_3",
+        "left_hand_lj_dg_5_4",
+        "head_0",
+        "head_1"
+      ]
+    },
+    "timestamp": {
+      "dtype": "float32",
+      "shape": [
+        1
+      ],
+      "names": null
+    },
+    "frame_index": {
+      "dtype": "int64",
+      "shape": [
+        1
+      ],
+      "names": null
+    },
+    "episode_index": {
+      "dtype": "int64",
+      "shape": [
+        1
+      ],
+      "names": null
+    },
+    "index": {
+      "dtype": "int64",
+      "shape": [
+        1
+      ],
+      "names": null
+    },
+    "task_index": {
+      "dtype": "int64",
+      "shape": [
+        1
+      ],
+      "names": null
+    },
+    "observation.images.cam_right_wrist": {
+      "dtype": "image",
+      "shape": [
+        120,
+        160,
+        3
+      ],
+      "names": [
+        "height",
+        "width",
+        "channels"
+      ]
+    },
+    "observation.images.cam_left_wrist": {
+      "dtype": "image",
+      "shape": [
+        120,
+        160,
+        3
+      ],
+      "names": [
+        "height",
+        "width",
+        "channels"
+      ]
+    },
+    "observation.images.cam_head": {
+      "dtype": "image",
+      "shape": [
+        120,
+        160,
+        3
+      ],
+      "names": [
+        "height",
+        "width",
+        "channels"
+      ]
+    }
+  }
+}

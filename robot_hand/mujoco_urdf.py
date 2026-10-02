@@ -105,11 +105,26 @@ def _build_actuated_spec(
     urdf_path,
     heavy_kp: float = 200.0,
     heavy_kv: float = 20.0,
+    heavy_damping: float = 0.5,
+    heavy_armature: float = 0.05,
     light_kp: float = 150.0,
     light_kv: float = 10.0,
+    light_damping: float = 0.1,
+    light_armature: float = 0.01,
+    wrist_roll_kp: float = 150.0,
+    wrist_roll_kv: float = 10.0,
+    wrist_roll_damping: float = 0.1,
+    wrist_roll_armature: float = 0.01,
+    wrist_roll_force_limit: float | None = None,
+    finger_kp: float = 150.0,
+    finger_kv: float = 10.0,
+    finger_damping: float = 0.05,
+    finger_armature: float = 0.01,
     heavy_effort_threshold: float = 40.0,
     rigid_kp: float = 20000.0,
     rigid_kv: float = 1000.0,
+    rigid_damping: float = 1000.0,
+    rigid_armature: float = 0.2,
 ) -> tuple[mujoco.MjSpec, dict]:
     """Builds the actuated MjSpec (position actuator per revolute joint,
     same gaintype/biastype MJCF's <position kp kv> shorthand expands to,
@@ -133,12 +148,12 @@ def _build_actuated_spec(
     the kinematic version had, just physically enforced instead of merely
     never-written.
 
-    Non-rigid gains are split into two tiers by the joint's own URDF
-    effort limit (heavy: shoulder/elbow, light: wrist/fingers) as a
-    starting point -- not tuned against the real robot's actual servo
-    response. forcerange is capped at that same URDF effort limit either
-    way, so the actuator can't apply more torque than the real joint is
-    rated for.
+    Non-rigid gains are split into tiers by the joint's own URDF effort
+    limit (heavy: shoulder/elbow, light: wrist pitch/yaw) plus a separate
+    wrist_roll tier for arm_6 and a hand-specific finger tier. Fingers need a higher small-error position gain than the wrists:
+    their forcerange still caps large moves at the URDF effort limit, but
+    the higher kp helps small command changes overcome contact/friction
+    without also making wrist-orientation tuning more aggressive.
     """
     urdf_path = pathlib.Path(urdf_path)
     xml_path = mujoco_compatible_urdf(urdf_path)
@@ -199,9 +214,15 @@ def _build_actuated_spec(
     # handles damped/stiff systems better.
     spec.option.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
     tier_params = {
-        "rigid": dict(kp=rigid_kp, kv=rigid_kv, armature=0.2, damping=rigid_kv),
-        "heavy": dict(kp=heavy_kp, kv=heavy_kv, armature=0.05, damping=0.5),
-        "light": dict(kp=light_kp, kv=light_kv, armature=0.01, damping=0.1),
+        "rigid": dict(kp=rigid_kp, kv=rigid_kv, armature=rigid_armature, damping=rigid_damping),
+        "heavy": dict(kp=heavy_kp, kv=heavy_kv, armature=heavy_armature, damping=heavy_damping),
+        "light": dict(kp=light_kp, kv=light_kv, armature=light_armature, damping=light_damping),
+        "wrist_roll": dict(
+            kp=wrist_roll_kp, kv=wrist_roll_kv,
+            armature=wrist_roll_armature, damping=wrist_roll_damping,
+            force_limit=wrist_roll_force_limit,
+        ),
+        "finger": dict(kp=finger_kp, kv=finger_kv, armature=finger_armature, damping=finger_damping),
     }
     joint_tiers: dict = {}
     for joint in list(spec.joints):
@@ -210,10 +231,16 @@ def _build_actuated_spec(
         e = effort.get(joint.name, light_kp)
         if joint.name in _RIGID_JOINTS:
             tier, e = "rigid", 1e6
+        elif joint.name.endswith("_arm_6"):
+            tier = "wrist_roll"
+        elif "_hand_" in joint.name:
+            tier = "finger"
         else:
             tier = "heavy" if e >= heavy_effort_threshold else "light"
         joint_tiers[joint.name] = tier
         p = tier_params[tier]
+        if p.get("force_limit") is not None:
+            e = float(p["force_limit"])
         joint.armature = p["armature"]
         joint.damping = [p["damping"], 0.0, 0.0]
         gainprm = [0.0] * 10
@@ -387,6 +414,10 @@ def _collapse_into_default_classes(xml_text: str, joint_tiers: dict, tier_params
         if tier is None:
             continue
         joint_el.set("class", tier)
+        p = tier_params.get(tier, {})
+        if p.get("force_limit") is not None:
+            limit = float(p["force_limit"])
+            joint_el.set("actuatorfrcrange", f"{-limit:g} {limit:g}")
         joint_el.attrib.pop("damping", None)
         joint_el.attrib.pop("armature", None)
 

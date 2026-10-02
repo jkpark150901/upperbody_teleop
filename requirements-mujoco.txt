@@ -3,3 +3,6 @@
 mujoco>=3.1.0
 numpy>=1.24
 pyyaml>=6.0
+pillow>=10.0     # scripts/mujoco_physics_process.py's TeachingDataRecorder/CameraView -- PNG encode/decode
+pyarrow>=14.0    # scripts/convert_to_lerobot.py -- parquet output (teaching_data_generation_rule.md)
+pandas>=2.0      # scripts/convert_to_lerobot.py -- meta/tasks.parquet's pandas-index-in-parquet convention

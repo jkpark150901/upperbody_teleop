@@ -326,6 +326,7 @@ class QuestHandUDPReader(SenseGloveReaderBase):
                 continue
             self.stats.active_by_hand[d["hand"]] += 1
             self.stats.last_active_t[d["hand"]] = now
+            d["t_recv_host"] = now
             latest[d["hand"]] = d
 
         left: Optional[HandState] = None
@@ -342,6 +343,7 @@ class QuestHandUDPReader(SenseGloveReaderBase):
                 continue
             state.raw["seq"] = d["seq"]
             state.raw["t_device"] = d["t"]
+            state.raw["t_recv_host"] = d["t_recv_host"]
             if hand == "left":
                 left = state
             else:

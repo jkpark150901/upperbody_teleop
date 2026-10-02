@@ -61,7 +61,7 @@ retarget:
   w_full_hand: 1.0
   pinch_scaling: 1.0
   alpha: 1.0
-  w_contact: 6.0
+  w_contact: 10
   segment_scaling:
     thumb: [1.0, 1.0, 1.0]
     index: [1.0, 1.03, 1.05]

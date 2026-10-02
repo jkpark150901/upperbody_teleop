@@ -156,6 +156,7 @@ class RBY1UpperBodyRetargeter:
         # joint's) reachable range and clipping is distorting the result --
         # two different bugs to chase, same as last_error_m above.
         self.last_wrist_orientation_error_deg: Dict[str, float] = {}
+        self.last_wrist_orientation_debug: Dict[str, Dict[str, object]] = {}
         # Off by default -- see _extension_ratio()/_measure_human_lengths().
         # When on, each segment's robot-length is scaled by how extended the
         # *human's own* BVH segment currently is relative to its length at
@@ -676,6 +677,30 @@ class RBY1UpperBodyRetargeter:
             candidates.append((alpha, beta, gamma))
         return candidates
 
+    @staticmethod
+    def _nearby_equivalent_zyz(c: Tuple[float, float, float], q_start: np.ndarray) -> list[np.ndarray]:
+        """Return 2pi-equivalent wrist-angle triples near the current q.
+
+        _zyz_candidates() returns principal Euler angles. That is fine for
+        reconstructing a rotation, but branch selection needs to compare
+        against physical joint coordinates and limits. Considering nearby
+        2pi-shifted equivalents avoids choosing a visually discontinuous
+        principal representation when an equivalent one lies closer to the
+        current joint state.
+        """
+        base = np.asarray(c, dtype=float)
+        out = []
+        for s0 in (-2.0 * np.pi, 0.0, 2.0 * np.pi):
+            for s1 in (-2.0 * np.pi, 0.0, 2.0 * np.pi):
+                for s2 in (-2.0 * np.pi, 0.0, 2.0 * np.pi):
+                    v = base + np.array([s0, s1, s2])
+                    # Keep the small useful neighborhood only; far-away
+                    # equivalents can never win on these wrist limits and
+                    # just make diagnostics noisy.
+                    if np.linalg.norm(v - q_start) <= 2.0 * np.pi:
+                        out.append(v)
+        return out
+
     def _solve_wrist_orientation_block(
         self,
         side: str,
@@ -711,15 +736,45 @@ class RBY1UpperBodyRetargeter:
         else:
             prior_vec = None
 
-        best = min(
-            self._zyz_candidates(m),
-            key=lambda c: (
-                round(violation(c), 6),
-                round(0.0 if prior_vec is None else float(np.linalg.norm(np.array(c) - prior_vec)), 6),
-                np.linalg.norm(np.array(c) - q_start[idx]),
-            ),
-        )
-        self.q[idx] = np.clip(best, self.lower[idx], self.upper[idx])
+        best = None
+        candidates = [
+            v
+            for c in self._zyz_candidates(m)
+            for v in self._nearby_equivalent_zyz(c, q_start[idx])
+        ]
+        if not candidates:
+            candidates = [np.asarray(c, dtype=float) for c in self._zyz_candidates(m)]
+
+        for raw in candidates:
+            clipped = np.clip(raw, self.lower[idx], self.upper[idx])
+            qtest = self.q.copy()
+            qtest[idx] = clipped
+            achieved = self.tree.forward_kinematics(
+                self._values(qtest), self.root_pose, only=[f"link_{side}_arm_6"]
+            )[f"link_{side}_arm_6"].as_matrix()
+            cos_angle = np.clip((np.trace(rotation_target.T @ achieved) - 1.0) / 2.0, -1.0, 1.0)
+            rot_err = float(np.degrees(np.arccos(cos_angle)))
+            prior_err = 0.0 if prior_vec is None else float(np.linalg.norm(clipped - prior_vec))
+            smooth_err = float(np.linalg.norm(clipped - q_start[idx]))
+            limit_violation = violation(raw)
+            score = (
+                round(rot_err, 6),
+                round(limit_violation, 6),
+                round(prior_err, 6),
+                smooth_err,
+            )
+            if best is None or score < best["score"]:
+                best = {
+                    "score": score,
+                    "raw": raw,
+                    "clipped": clipped,
+                    "rot_err": rot_err,
+                    "violation": limit_violation,
+                    "prior_err": prior_err,
+                    "smooth_err": smooth_err,
+                }
+
+        self.q[idx] = best["clipped"]
 
         wrist_link = f"link_{side}_arm_6"
         achieved = self.tree.forward_kinematics(
@@ -727,6 +782,14 @@ class RBY1UpperBodyRetargeter:
         )[wrist_link].as_matrix()
         cos_angle = np.clip((np.trace(rotation_target.T @ achieved) - 1.0) / 2.0, -1.0, 1.0)
         self.last_wrist_orientation_error_deg[side] = float(np.degrees(np.arccos(cos_angle)))
+        self.last_wrist_orientation_debug[side] = {
+            "raw": best["raw"].copy(),
+            "clipped": best["clipped"].copy(),
+            "limit_clip": np.abs(best["raw"] - best["clipped"]).copy(),
+            "limit_violation": float(best["violation"]),
+            "rot_err_deg": float(self.last_wrist_orientation_error_deg[side]),
+            "smooth_err": float(best["smooth_err"]),
+        }
 
     def solve_wrist(self, side: str, wrist_pos: np.ndarray, iterations: int = 7) -> Dict[str, float]:
         """Torso-fixed, one-arm, wrist-position-only IK.
@@ -750,6 +813,62 @@ class RBY1UpperBodyRetargeter:
         self.last_error_m = {key: float(np.linalg.norm(target[key] - final_points[key]))}
         return self._values(self.q)
 
+    def solve_wrist_closed_form(self, side: str, wrist_pos: np.ndarray) -> Dict[str, float]:
+        """Torso-fixed, one-arm, wrist-position-only IK -- same closed-form
+        shoulder+elbow solve _solve_arm_position_block uses for mocap
+        (exact, not an iterative DLS search -- see that method's docstring
+        for why DLS was dropped there after it got stuck in local minima).
+        solve_wrist()'s DLS treats the elbow as just another free joint
+        pulled toward q_start by the regularization term, with nothing
+        actually reasoning about where the elbow should go -- confirmed to
+        visibly barely bend regardless of the wrist target (and separately,
+        to plateau tens of mm away from reachable targets, see solve_wrist's
+        own confirmed local-minimum issue).
+
+        _solve_arm_position_block needs 3 real points (shoulder, elbow,
+        wrist) to find the swivel plane; only the wrist is actually tracked
+        here (Quest doesn't give an elbow point), so this SYNTHESIZES a
+        plausible elbow position via the standard 2-link triangle (law of
+        cosines, from the URDF's own real upper/lower arm lengths) plus a
+        fixed "elbow droops toward -Z" swivel heuristic (the vertical plane
+        through the shoulder and wrist) -- the same assumption a relaxed
+        human arm makes when nothing else constrains the elbow's swing.
+        _solve_arm_position_block only needs this hint's DIRECTION to get
+        the swivel plane right; it re-solves the exact elbow angle itself
+        from the real segment lengths, so the hint doesn't need to be
+        exactly on the reachable circle.
+        """
+        if side not in ("left", "right"):
+            raise ValueError("side must be 'left' or 'right'")
+        self.q[:2] = self.reference_q[:2]
+        q_start = self.q.copy()
+        shoulder_key, elbow_key, wrist_key = f"{side}_shoulder", f"{side}_elbow", f"{side}_wrist"
+        shoulder = self._chain_points(self.q, (shoulder_key,))[shoulder_key]
+        wrist_pos = np.asarray(wrist_pos, dtype=float)
+
+        l1 = float(np.linalg.norm(self.tree.joints[f"{side}_arm_3"].origin.pos))
+        l2 = float(np.linalg.norm(self.tree.joints[f"{side}_arm_4"].origin.pos))
+        to_wrist = wrist_pos - shoulder
+        dist = float(np.linalg.norm(to_wrist))
+        dist_reachable = float(np.clip(dist, abs(l1 - l2) + 1e-6, l1 + l2 - 1e-6))
+        dir_sw = to_wrist / dist if dist > 1e-9 else np.array([1.0, 0.0, 0.0])
+        cos_theta = np.clip((l1 ** 2 + dist_reachable ** 2 - l2 ** 2) / (2.0 * l1 * dist_reachable), -1.0, 1.0)
+        sin_theta = float(np.sqrt(max(0.0, 1.0 - cos_theta ** 2)))
+        down = np.array([0.0, 0.0, -1.0])  # this project's convention: Z is up (see bvh_upper_body_mapping.md)
+        perp_down = down - np.dot(down, dir_sw) * dir_sw
+        if np.linalg.norm(perp_down) < 1e-6:  # dir_sw ~parallel to down/up: swivel plane undefined, pick any
+            fallback = np.array([0.0, 1.0, 0.0])
+            perp_down = fallback - np.dot(fallback, dir_sw) * dir_sw
+        perp_down = _unit(perp_down)
+        elbow_hint = shoulder + l1 * cos_theta * dir_sw + l1 * sin_theta * perp_down
+
+        target = {shoulder_key: shoulder, elbow_key: elbow_hint, wrist_key: wrist_pos}
+        self._solve_arm_position_block(side, target, q_start)
+        self.last_target = target
+        final_points = self._chain_points(self.q, (wrist_key,))
+        self.last_error_m = {wrist_key: float(np.linalg.norm(target[wrist_key] - final_points[wrist_key]))}
+        return self._values(self.q)
+
     def solve_wrist_pose(
         self,
         side: str,
@@ -762,11 +881,14 @@ class RBY1UpperBodyRetargeter:
         This is the Quest-only counterpart to update()'s mocap path: Quest
         supplies a wrist pose directly, already in the robot frame after the
         caller's calibration/remap, so this skips landmark calibration and
-        only drives that arm. Position is solved first; wrist orientation
-        then uses the same closed-form arm_4/5/6 block as the full upper-body
-        retargeter.
+        only drives that arm. Position is solved first (closed-form,
+        solve_wrist_closed_form -- NOT solve_wrist's DLS, see that method's
+        docstring for why); wrist orientation then uses the same closed-form
+        arm_4/5/6 block as the full upper-body retargeter. `iterations` is
+        unused now (kept for call-site compatibility) since the closed-form
+        position solve doesn't iterate.
         """
-        joints = self.solve_wrist(side, wrist_pos, iterations)
+        joints = self.solve_wrist_closed_form(side, wrist_pos)
         if wrist_rotation is not None:
             q_start = self.q.copy()
             self._solve_wrist_orientation_block(side, np.asarray(wrist_rotation, dtype=float), q_start)

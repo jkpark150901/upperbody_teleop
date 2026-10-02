@@ -1,0 +1,152 @@
+# Single place to tune actuator gains, cloth physical properties, and
+# camera resolution/rate for scripts/mujoco_physics_process.py runs --
+# read fresh on every run (robot_hand/sim_config.py's load_sim_config(),
+# no caching), so editing this file and re-running the process IS the
+# test-iteration loop. Previously these were scattered: actuator gains as
+# Python default args in robot_hand/mujoco_urdf.py's _build_actuated_spec
+# (and then baked, stale, into outputs/mujoco_urdf/rby1_dg5f_actuated.xml
+# until something bumped the URDF's mtime), cloth as hardcoded attributes
+# in assets/scene/scene.xml's <flexcomp>, camera resolution/rate as
+# CameraView's width/height/hz Python defaults.
+
+# robot_hand/mujoco_urdf.py's _build_actuated_spec()'s per-tier position-
+# actuator gains (MJCF <position kp kv> equivalent) -- rigid is torso_hp/
+# torso_5 (effectively welded, not a torque-limited servo), heavy is
+# shoulder/elbow, light is wrist, and finger is DG5F hand joints. heavy_effort_threshold is the
+# URDF joint effort-limit cutoff between the heavy/light tiers.
+#
+# Current tier membership:
+#   rigid:
+#     torso_hp, torso_5
+#   heavy:
+#     left_arm_0, left_arm_1, left_arm_2, left_arm_3
+#     right_arm_0, right_arm_1, right_arm_2, right_arm_3
+#     head_0, head_1
+#   light:
+#     left_arm_4, left_arm_5
+#     right_arm_4, right_arm_5
+#   wrist_roll:
+#     left_arm_6, right_arm_6
+#   finger:
+#     left_hand_lj_dg_{1..5}_{1..4}
+#     right_hand_rj_dg_{1..5}_{1..4}
+# Note:
+#   kp/kv are actuator gains:
+#     torque = kp * (ctrl - qpos) - kv * qvel, then clipped by forcerange.
+#   joint_damping is MuJoCo's passive <joint damping="...">, separate from kv.
+#     Increase this when a joint keeps physically wobbling/flopping even
+#     after actuator kv feels high enough.
+#   armature is added rotor inertia. Increase only if the joint is numerically
+#     twitchy/unstable; too much makes it feel heavy.
+#   force limits still come from each URDF joint's <limit effort=...> and are
+#     not changed here unless force_limit is set for a tier.
+actuator_gains:
+  rigid: {kp: 20000.0, kv: 1000.0, joint_damping: 1000.0, armature: 0.2}
+  heavy: {kp: 500.0, kv: 60.0, joint_damping: 2.0, armature: 0.05}
+  light: {kp: 500.0, kv: 30.0, joint_damping: 1.0, armature: 0.01}
+  wrist_roll: {kp: 1200.0, kv: 35.0, joint_damping: 0.5, armature: 0.01, force_limit: 20.0}
+  finger: {kp: 1000.0, kv: 8.0, joint_damping: 0.15, armature: 0.01}
+  heavy_effort_threshold: 40.0
+
+# scripts/hand_process.py hand retargeting defaults.
+#
+# backend:
+#   anydex   = Quest/OpenXR skeleton -> AnyDexRetarget -> DG5F joint angles.
+#   analytic = this repo's simpler analytical hand retargeter.
+#
+# anydex_mode:
+#   adaptive = AnyDex AdaptiveOptimizerAnalytical. Pinch/contact-aware soft
+#              losses are available here, but still not hard constraints.
+#   vector   = AnyDex KeyVectorOptimizer. Simpler palm/link key-vector
+#              matching; useful as a baseline when adaptive behavior is hard
+#              to reason about.
+#
+# pinch_override:
+#   enabled false = backend result only.
+#   mode preset   = when Quest thumb/index tips are close, blend thumb/index
+#                   toward stored joint-angle targets.
+#   mode ik       = when Quest thumb/index tips are close, blend thumb/index
+#                   toward a staged fingertip-IK target. This is NOT full-hand
+#                   IK retargeting; AnyDex/analytic still controls the rest of
+#                   the hand, and only the pinch pair is overridden.
+hand_retargeting:
+  backend: analytic
+  anydex_mode: adaptive
+  anydex_configs:
+    adaptive:
+      left: configs/anydex/dg5f_left_adaptive_quest3.yaml
+      right: configs/anydex/dg5f_right_adaptive_quest3.yaml
+    vector:
+      left: configs/anydex/dg5f_left_vector_quest3.yaml
+      right: configs/anydex/dg5f_right_vector_quest3.yaml
+  pinch_override:
+    enabled: false
+    mode: ik
+    enter_distance: 0.035
+    exit_distance: 0.055
+    blend_time: 0.18
+    strength: 0.85
+
+# scripts/mujoco_physics_process.py pinch/contact physics assist.
+# This is separate from hand_retargeting.pinch_override:
+#   pinch_override changes the commanded thumb/index joint targets upstream.
+#   pinch_contact_assist adds MuJoCo-side qfrc/xfrc while the simulated
+#   thumb/index distal bodies are close. Keep disabled when checking pure
+#   AnyDex/analytic retargeting behavior.
+pinch_contact_assist:
+  enabled: false
+  force: 4.0
+  mode: torque
+  enter_distance: 0.025
+  exit_distance: 0.045
+
+# assets/scene/scene.xml's cloth <flexcomp> -- generated into assets/
+# scene/_cloth_generated.xml each run (robot_hand/sim_config.generate_
+# cloth_xml()), which scene.xml <include>s instead of hardcoding the
+# block itself. solref/solimp are the official MuJoCo drape.xml values
+# (see scene.xml's own comments on why passive=true + these specific
+# numbers -- a softer variant sank straight through the table instead of
+# settling); change them with that history in mind, not blindly.
+cloth:
+  grid_count: [7, 7, 1]
+  spacing: [0.06, 0.06, 0.06]
+  pos: [0.65, 0.0, 0.08]
+  radius: 0.002
+  mass: 0.1
+  young: 2.0e4
+  poisson: 0.2
+  thickness: 1.0e-3
+  damping: 0.02
+  solref: [0.01, 1]
+  solimp: [0.95, 0.99, 0.0001]
+  friction: [1.2, 0.01, 0.0001]
+
+# CameraView's on/off switches + resolution + render/sample rate + GL
+# backend -- also what gets recorded into TeachingDataRecorder episodes
+# and meta/info.json's fps on lerobot conversion (see
+# scripts/mujoco_physics_process.py's RecordingSession). show/capture
+# mirror --show-cameras/--capture-cameras (true here means "on by default
+# without having to pass the flag every run"); the command-line flags
+# still work and OR with these (passing --show-cameras always turns it on
+# even if this file says false, but saying true here means you don't have
+# to keep typing the flag). Same for --camera-hz/--gl-backend/--egl-device
+# vs hz/gl_backend/egl_device here: the CLI value wins if explicitly
+# passed, otherwise this file's is used.
+#
+# gl_backend: "auto" picks egl on Linux, wgl on Windows (both confirmed
+# safe to create a GL context with from CameraView's background render
+# thread alongside the main viewer's own GLFW window -- plain "glfw" is
+# NOT: two GLFW window-class registrations from different threads crash
+# with "Win32: Failed to register window class", confirmed the hard way;
+# CameraView falls back to slower synchronous main-thread rendering
+# whenever MUJOCO_GL ends up as plain glfw instead of one of the three
+# confirmed-safe backends). egl_device (Linux egl only): GPU index, null
+# = first usable device.
+camera:
+  show: true
+  capture: true
+  width: 320
+  height: 240
+  hz: 10
+  gl_backend: auto
+  egl_device: null

@@ -1,11 +1,11 @@
 <mujoco model="rby1_dg5f scene">
   <!-- Robot itself: outputs/mujoco_urdf/rby1_dg5f_actuated.xml, generated/
        cached by robot_hand.mujoco_urdf.build_actuated_model() (see that
-       module -- edit that file directly, or its --light-kp/etc. Python
+       module; edit that file directly, or its light-kp/etc. Python
        defaults, to retune actuator gains; this scene never duplicates any
        of it). MuJoCo merges an <include>'d file's <worldbody>/<asset>/
        <actuator>/<contact> sections into this document's own, so the
-       robot's actuators/excludes/meshes all carry over unchanged -- this
+       robot's actuators/excludes/meshes all carry over unchanged; this
        file only ever ADDS the environment around it (pedestal, table,
        cloth), never touches the robot definition itself.
 
@@ -14,12 +14,12 @@
   -->
   <include file="../../outputs/mujoco_urdf/rby1_dg5f_actuated.xml"/>
 
-  <!-- Overrides the included robot MJCF's integrator="implicitfast" --
+  <!-- Overrides the included robot MJCF's integrator="implicitfast";
        the cloth's passive flex contact (see below) requires "discrete"
        specifically (MuJoCo raises otherwise: "passive flex contact
        requires an integrator with the effective metric"). Verify robot
        actuator tracking still behaves the same under discrete before
-       trusting this long-term -- untested against implicitfast's own
+       trusting this long-term; untested against implicitfast's own
        behavior beyond "doesn't error and doesn't NaN". -->
   <option integrator="discrete"/>
 
@@ -37,8 +37,13 @@
               rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300"/>
     <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.1"/>
     <material name="pedestal_mat" rgba="0.25 0.25 0.27 1"/>
-    <material name="table_top_mat" rgba="0.55 0.4 0.25 1"/>
-    <material name="table_leg_mat" rgba="0.3 0.2 0.12 1"/>
+    <!-- alpha lowered (grasping felt too fiddly with the table visually
+         in the way of judging hand-to-cloth alignment); the arm/hand
+         also no longer physically collide with the table at all, see
+         the contact excludes below, so this transparency
+         matches the physics, not just the render. -->
+    <material name="table_top_mat" rgba="0.55 0.4 0.25 0.18"/>
+    <material name="table_leg_mat" rgba="0.3 0.2 0.12 0.18"/>
     <material name="cloth_mat" rgba="0.75 0.15 0.15 1"/>
   </asset>
 
@@ -47,22 +52,22 @@
     <light pos="1 1 2" dir="-0.3 -0.3 -1" directional="true"/>
 
     <!-- Everything below is on geom group 2 (robot uses 0=collision,
-         1=visual -- see scripts/upper_body_retarget_mujoco.py's viewer
+         1=visual; see scripts/upper_body_retarget_mujoco.py's viewer
          setup, which hides whichever of those two is collision-only).
          group 2 is scene furniture: not part of that robot-specific
          mesh/capsule toggle, so it was getting hidden along with the
-         robot's own collision capsules before this was set -- confirmed
+         robot's own collision capsules before this was set; confirmed
          the actual bug (table wasn't invisible/misplaced, just in the
          wrong geom group and getting toggled off). -->
 
     <!-- Floor is 0.8m below the robot's own root (robot's URDF places its
-         base at the mount point, z=0 -- roughly torso height, not the
-         ground -- so the pedestal below fills that gap and IS the visual
+         base at the mount point, z=0; roughly torso height, not the
+         ground, so the pedestal below fills that gap and IS the visual
          reason it's up there, not just a floating robot). -->
     <geom name="floor" type="plane" group="2" pos="0 0 -0.8" size="3 3 0.1" material="groundplane"/>
 
     <!-- Pedestal: a simple stand under the robot's root, floor up to
-         z=-0.2 (NOT all the way to the root at z=0) -- measured up to
+         z=-0.2 (NOT all the way to the root at z=0); measured up to
          7.5cm of real overlap between an earlier, taller/wider version
          (top at z=0, radius 0.22) and the hanging forearms/hands at rest
          (wrists sit around z=0.03, arms spread to about y=+-0.22, right
@@ -73,20 +78,20 @@
       <geom name="pedestal_base" type="cylinder" group="2" size="0.2 0.03" pos="0 0 0.03" material="pedestal_mat"/>
     </body>
 
-    <!-- Table in front of the robot (robot's own +X is forward -- see
+    <!-- Table in front of the robot (robot's own +X is forward; see
          bvh_upper_body_mapping.md/vr_device_dg5f_retargeting.md for how
          that convention was pinned down). This body's pos is the one
          place to move it closer/farther (x) or sideways (y); z is the
          table-top height relative to the robot's own root.
-         Legs are sized to reach the floor (z=-0.8) exactly -- an earlier
+         Legs are sized to reach the floor (z=-0.8) exactly; an earlier
          version left them floating ~0.2m short, which combined with the
          group bug above made the whole table seem to not exist.
          Keep x >= ~0.6: the near legs sit at table_x -/+ 0.32, and the
-         pedestal column (see above) has radius 0.22 -- x=0.5 put the near
+         pedestal column (see above) has radius 0.22; x=0.5 put the near
          leg at world x=0.18, inside the pedestal, visibly clipping
          through it. -->
     <body name="table" pos="0.65 0 0">
-      <!-- Top: y half-size 0.5 (1m wide). z lowered to 0.02 -- almost
+      <!-- Top: y half-size 0.5 (1m wide). z lowered to 0.02; almost
            level with the robot's own root (z=0), not waist height
            anymore (was 0.15, surface at 0.165; too high per request).
            Surface is now at 0.02+0.015=0.035. Legs recomputed to reach
@@ -101,73 +106,91 @@
     </body>
 
     <!-- Example deformable body: cloth patch resting on the table.
-         Parameters taken from MuJoCo's own official cloth example
-         (google-deepmind/mujoco model/flex/drape.xml -- a cloth settling
-         onto a sphere), not our earlier ad-hoc edge-damping tuning, which
-         even softened was still unstable enough to disrupt robot control.
-         drape.xml uses a real elasticity model (Young's modulus, dim=2
-         membrane) with passive contact instead of edge-only damping.
-         Table surface is at world z = 0 (table body) + 0.02 (top pos) +
-         0.015 (half-thickness) = 0.035 -- keep this in sync if you move
-         table_top's z above (it was out of sync with an earlier table_top
-         edit, which put the cloth's start position *below* the table
-         surface -- confirmed as the reason it didn't look "on" the
-         table). Placed flush (surface + cloth radius) so there is no
-         drop/impact event. -->
-    <!-- <flexcomp type="grid" count="13 13 1" spacing="0.03 0.03 0.03" pos="0.65 0 0.037"
-              radius="0.002" mass="0.1" name="cloth" dim="2" material="cloth_mat">
-      <contact selfcollide="auto" passive="true" solref="0.01 1" solimp="0.95 0.99 0.0001"
-                friction="1 1 0.005 0.0001 0.0001"/>
-      <elasticity young="2e4" poisson="0.2" thickness="1e-3" elastic2d="both" damping="1e-2"/>
-    </flexcomp> -->
-    <!-- <flexcomp type="grid"
-                count="13 13 1"
-                spacing=".055 .055 .055"
-                pos="0.65 0 0.037"
-                radius=".004"
-                mass=".25"
-                name="cloth1"
-                dim="2">
-
-          <contact selfcollide="auto"
-                  passive="true"
-                  solref="0.01 1"
-                  solimp=".95 .99 .0001"/>
-
-          <elasticity young="2e4"
-                      poisson=".2"
-                      thickness="1e-3"
-                      elastic2d="both"
-                      damping="1e-2"/>
-      </flexcomp> -->
-      <!-- 7x7 grid (72 tris), was 13x13 (288 tris): same 0.36m patch, coarser
-           mesh. Measured physics tick (8 substeps @ 60Hz): 13x13 63.9ms
-           (~16Hz max), 9x9 30.1ms, 7x7 13.9ms (~72Hz max), 5x5 3.5ms.
-           selfcollide is most of the remaining cost (7x7 with "none": 4.4ms). -->
-      <flexcomp type="grid"
-          count="7 7 1"
-          spacing="0.06 0.06 0.06"
-          pos="0.65 0 0.045"
-          radius="0.002"
-          mass="0.1"
-          name="cloth"
-          dim="2"
-          material="cloth_mat">
-
-    <contact
-        selfcollide="auto"
-        passive="false"
-        condim="3"
-        solref="0.02 1"
-        solimp="0.90 0.95 0.001"
-        friction="0.8 0.005 0.0001"/>
-
-    <elasticity
-        young="2e4"
-        poisson="0.2"
-        thickness="1e-3"
-        elastic2d="both"
-        damping="0.02"/>
-</flexcomp>
+         Parameters come from configs/sim_params.yaml's cloth: section,
+         templated into _cloth_generated.xml by robot_hand/sim_config.
+         generate_cloth_xml() (called by scripts/mujoco_physics_process.py
+         before this file is loaded); edit that YAML, not this block, to
+         retune (see robot_hand/sim_config.py's own comments for why:
+         Young's modulus/dim=2 membrane/passive contact, matching
+         MuJoCo's own official drape.xml example, not our earlier ad-hoc
+         edge-damping tuning, which even softened was still unstable
+         enough to disrupt robot control; a softer solref/solimp
+         variant was also tried directly in this file and reverted: it
+         sank straight through the table instead of settling). Table
+         surface is at world z = 0 (table body) + 0.02 (top pos) + 0.015
+         (half-thickness) = 0.035; keep the YAML's pos z in sync if you
+         move table_top's z above (confirmed the hard way: out of sync
+         once put the cloth's start position *below* the table surface). -->
+    <include file="_cloth_generated.xml"/>
   </worldbody>
+
+  <contact>
+    <!-- Keep the table active for cloth/object contacts, but ignore direct
+         contacts against the robot arms and hands during teleop. -->
+    <exclude name="exclude_table_link_right_arm_0" body1="table" body2="link_right_arm_0"/>
+    <exclude name="exclude_table_link_right_arm_1" body1="table" body2="link_right_arm_1"/>
+    <exclude name="exclude_table_link_right_arm_2" body1="table" body2="link_right_arm_2"/>
+    <exclude name="exclude_table_link_right_arm_3" body1="table" body2="link_right_arm_3"/>
+    <exclude name="exclude_table_link_right_arm_4" body1="table" body2="link_right_arm_4"/>
+    <exclude name="exclude_table_link_right_arm_5" body1="table" body2="link_right_arm_5"/>
+    <exclude name="exclude_table_link_right_arm_6" body1="table" body2="link_right_arm_6"/>
+    <exclude name="exclude_table_right_hand_rl_dg_palm" body1="table" body2="right_hand_rl_dg_palm"/>
+    <exclude name="exclude_table_right_hand_rl_dg_1_1" body1="table" body2="right_hand_rl_dg_1_1"/>
+    <exclude name="exclude_table_right_hand_rl_dg_1_2" body1="table" body2="right_hand_rl_dg_1_2"/>
+    <exclude name="exclude_table_right_hand_rl_dg_1_3" body1="table" body2="right_hand_rl_dg_1_3"/>
+    <exclude name="exclude_table_right_hand_rl_dg_1_4" body1="table" body2="right_hand_rl_dg_1_4"/>
+    <exclude name="exclude_table_right_hand_rl_dg_2_1" body1="table" body2="right_hand_rl_dg_2_1"/>
+    <exclude name="exclude_table_right_hand_rl_dg_2_2" body1="table" body2="right_hand_rl_dg_2_2"/>
+    <exclude name="exclude_table_right_hand_rl_dg_2_3" body1="table" body2="right_hand_rl_dg_2_3"/>
+    <exclude name="exclude_table_right_hand_rl_dg_2_4" body1="table" body2="right_hand_rl_dg_2_4"/>
+    <exclude name="exclude_table_right_hand_rl_dg_3_1" body1="table" body2="right_hand_rl_dg_3_1"/>
+    <exclude name="exclude_table_right_hand_rl_dg_3_2" body1="table" body2="right_hand_rl_dg_3_2"/>
+    <exclude name="exclude_table_right_hand_rl_dg_3_3" body1="table" body2="right_hand_rl_dg_3_3"/>
+    <exclude name="exclude_table_right_hand_rl_dg_3_4" body1="table" body2="right_hand_rl_dg_3_4"/>
+    <exclude name="exclude_table_right_hand_rl_dg_3_tip" body1="table" body2="right_hand_rl_dg_3_tip"/>
+    <exclude name="exclude_table_right_hand_rl_dg_4_1" body1="table" body2="right_hand_rl_dg_4_1"/>
+    <exclude name="exclude_table_right_hand_rl_dg_4_2" body1="table" body2="right_hand_rl_dg_4_2"/>
+    <exclude name="exclude_table_right_hand_rl_dg_4_3" body1="table" body2="right_hand_rl_dg_4_3"/>
+    <exclude name="exclude_table_right_hand_rl_dg_4_4" body1="table" body2="right_hand_rl_dg_4_4"/>
+    <exclude name="exclude_table_right_hand_rl_dg_4_tip" body1="table" body2="right_hand_rl_dg_4_tip"/>
+    <exclude name="exclude_table_right_hand_rl_dg_5_1" body1="table" body2="right_hand_rl_dg_5_1"/>
+    <exclude name="exclude_table_right_hand_rl_dg_5_2" body1="table" body2="right_hand_rl_dg_5_2"/>
+    <exclude name="exclude_table_right_hand_rl_dg_5_3" body1="table" body2="right_hand_rl_dg_5_3"/>
+    <exclude name="exclude_table_right_hand_rl_dg_5_4" body1="table" body2="right_hand_rl_dg_5_4"/>
+    <exclude name="exclude_table_right_hand_rl_dg_5_tip" body1="table" body2="right_hand_rl_dg_5_tip"/>
+    <exclude name="exclude_table_link_left_arm_0" body1="table" body2="link_left_arm_0"/>
+    <exclude name="exclude_table_link_left_arm_1" body1="table" body2="link_left_arm_1"/>
+    <exclude name="exclude_table_link_left_arm_2" body1="table" body2="link_left_arm_2"/>
+    <exclude name="exclude_table_link_left_arm_3" body1="table" body2="link_left_arm_3"/>
+    <exclude name="exclude_table_link_left_arm_4" body1="table" body2="link_left_arm_4"/>
+    <exclude name="exclude_table_link_left_arm_5" body1="table" body2="link_left_arm_5"/>
+    <exclude name="exclude_table_link_left_arm_6" body1="table" body2="link_left_arm_6"/>
+    <exclude name="exclude_table_left_hand_ll_dg_mount" body1="table" body2="left_hand_ll_dg_mount"/>
+    <exclude name="exclude_table_left_hand_ll_dg_base" body1="table" body2="left_hand_ll_dg_base"/>
+    <exclude name="exclude_table_left_hand_ll_dg_palm" body1="table" body2="left_hand_ll_dg_palm"/>
+    <exclude name="exclude_table_left_hand_ll_dg_1_1" body1="table" body2="left_hand_ll_dg_1_1"/>
+    <exclude name="exclude_table_left_hand_ll_dg_1_2" body1="table" body2="left_hand_ll_dg_1_2"/>
+    <exclude name="exclude_table_left_hand_ll_dg_1_3" body1="table" body2="left_hand_ll_dg_1_3"/>
+    <exclude name="exclude_table_left_hand_ll_dg_1_4" body1="table" body2="left_hand_ll_dg_1_4"/>
+    <exclude name="exclude_table_left_hand_ll_dg_1_tip" body1="table" body2="left_hand_ll_dg_1_tip"/>
+    <exclude name="exclude_table_left_hand_ll_dg_2_1" body1="table" body2="left_hand_ll_dg_2_1"/>
+    <exclude name="exclude_table_left_hand_ll_dg_2_2" body1="table" body2="left_hand_ll_dg_2_2"/>
+    <exclude name="exclude_table_left_hand_ll_dg_2_3" body1="table" body2="left_hand_ll_dg_2_3"/>
+    <exclude name="exclude_table_left_hand_ll_dg_2_4" body1="table" body2="left_hand_ll_dg_2_4"/>
+    <exclude name="exclude_table_left_hand_ll_dg_2_tip" body1="table" body2="left_hand_ll_dg_2_tip"/>
+    <exclude name="exclude_table_left_hand_ll_dg_3_1" body1="table" body2="left_hand_ll_dg_3_1"/>
+    <exclude name="exclude_table_left_hand_ll_dg_3_2" body1="table" body2="left_hand_ll_dg_3_2"/>
+    <exclude name="exclude_table_left_hand_ll_dg_3_3" body1="table" body2="left_hand_ll_dg_3_3"/>
+    <exclude name="exclude_table_left_hand_ll_dg_3_4" body1="table" body2="left_hand_ll_dg_3_4"/>
+    <exclude name="exclude_table_left_hand_ll_dg_3_tip" body1="table" body2="left_hand_ll_dg_3_tip"/>
+    <exclude name="exclude_table_left_hand_ll_dg_4_1" body1="table" body2="left_hand_ll_dg_4_1"/>
+    <exclude name="exclude_table_left_hand_ll_dg_4_2" body1="table" body2="left_hand_ll_dg_4_2"/>
+    <exclude name="exclude_table_left_hand_ll_dg_4_3" body1="table" body2="left_hand_ll_dg_4_3"/>
+    <exclude name="exclude_table_left_hand_ll_dg_4_4" body1="table" body2="left_hand_ll_dg_4_4"/>
+    <exclude name="exclude_table_left_hand_ll_dg_4_tip" body1="table" body2="left_hand_ll_dg_4_tip"/>
+    <exclude name="exclude_table_left_hand_ll_dg_5_1" body1="table" body2="left_hand_ll_dg_5_1"/>
+    <exclude name="exclude_table_left_hand_ll_dg_5_2" body1="table" body2="left_hand_ll_dg_5_2"/>
+    <exclude name="exclude_table_left_hand_ll_dg_5_3" body1="table" body2="left_hand_ll_dg_5_3"/>
+    <exclude name="exclude_table_left_hand_ll_dg_5_4" body1="table" body2="left_hand_ll_dg_5_4"/>
+  </contact>
 </mujoco>

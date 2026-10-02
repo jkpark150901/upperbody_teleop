@@ -106,3 +106,51 @@ WARNING Wed Sep 30 15:52:51 2026: Flex stiffness is too ill-conditioned for the 
 
 WARNING Wed Sep 30 15:52:51 2026: Inertia matrix is too close to singular at DOF 515. Check model. Time = 8.4120.
 
+ERROR Thu Oct  1 14:19:02 2026: could not create window
+
+ERROR Thu Oct  1 14:31:57 2026: could not initialize GLFW
+
+ERROR Thu Oct  1 15:47:07 2026: could not create window
+
+ERROR Thu Oct  1 15:47:34 2026: could not create window
+
+ERROR Thu Oct  1 15:47:47 2026: could not create window
+
+WARNING Thu Oct  1 16:03:53 2026: Flex stiffness is too ill-conditioned for the effective-metric block preconditioner: the M+K solve ran out of iterations at a relative residual of 1.09e-08 and qacc_smooth is under-converged. Reported as a singular inertia below, because M+K is the effective inertia.
+
+WARNING Thu Oct  1 16:03:53 2026: Inertia matrix is too close to singular at DOF 133. Check model. Time = 4.5720.
+
+ERROR Thu Oct  1 18:14:43 2026: could not create window
+
+WARNING Thu Oct  1 18:18:40 2026: Flex stiffness is too ill-conditioned for the effective-metric block preconditioner: the M+K solve ran out of iterations at a relative residual of 1.46e-08 and qacc_smooth is under-converged. Reported as a singular inertia below, because M+K is the effective inertia.
+
+WARNING Thu Oct  1 18:18:40 2026: Inertia matrix is too close to singular at DOF 108. Check model. Time = 3.3300.
+
+WARNING Thu Oct  1 19:07:32 2026: Flex stiffness is too ill-conditioned for the effective-metric block preconditioner: the M+K solve ran out of iterations at a relative residual of 1.10e-07 and qacc_smooth is under-converged. Reported as a singular inertia below, because M+K is the effective inertia.
+
+WARNING Thu Oct  1 19:07:32 2026: Inertia matrix is too close to singular at DOF 81. Check model. Time = 33.3100.
+
+WARNING Thu Oct  1 19:07:32 2026: Flex stiffness is too ill-conditioned for the effective-metric block preconditioner: the M+K solve ran out of iterations at a relative residual of 2.37e-07 and qacc_smooth is under-converged. Reported as a singular inertia below, because M+K is the effective inertia.
+
+WARNING Thu Oct  1 19:07:32 2026: Inertia matrix is too close to singular at DOF 132. Check model. Time = 0.0000.
+
+WARNING Thu Oct  1 19:18:33 2026: Flex stiffness is too ill-conditioned for the effective-metric block preconditioner: the M+K solve ran out of iterations at a relative residual of 1.36e-08 and qacc_smooth is under-converged. Reported as a singular inertia below, because M+K is the effective inertia.
+
+WARNING Thu Oct  1 19:18:33 2026: Inertia matrix is too close to singular at DOF 96. Check model. Time = 191.4520.
+
+WARNING Thu Oct  1 19:50:21 2026: Flex stiffness is too ill-conditioned for the effective-metric block preconditioner: the M+K solve ran out of iterations at a relative residual of 4.73e-08 and qacc_smooth is under-converged. Reported as a singular inertia below, because M+K is the effective inertia.
+
+WARNING Thu Oct  1 19:50:21 2026: Inertia matrix is too close to singular at DOF 87. Check model. Time = 139.1380.
+
+WARNING Thu Oct  1 20:23:23 2026: Flex stiffness is too ill-conditioned for the effective-metric block preconditioner: the M+K solve ran out of iterations at a relative residual of 1.50e-07 and qacc_smooth is under-converged. Reported as a singular inertia below, because M+K is the effective inertia.
+
+WARNING Thu Oct  1 20:23:23 2026: Inertia matrix is too close to singular at DOF 78. Check model. Time = 26.0780.
+
+WARNING Thu Oct  1 20:54:02 2026: Flex stiffness is too ill-conditioned for the effective-metric block preconditioner: the M+K solve ran out of iterations at a relative residual of 3.34e-08 and qacc_smooth is under-converged. Reported as a singular inertia below, because M+K is the effective inertia.
+
+WARNING Thu Oct  1 20:54:03 2026: Inertia matrix is too close to singular at DOF 69. Check model. Time = 75.7900.
+
+WARNING Thu Oct  1 20:57:50 2026: Flex stiffness is too ill-conditioned for the effective-metric block preconditioner: the M+K solve ran out of iterations at a relative residual of 9.07e-08 and qacc_smooth is under-converged. Reported as a singular inertia below, because M+K is the effective inertia.
+
+WARNING Thu Oct  1 20:57:50 2026: Inertia matrix is too close to singular at DOF 113. Check model. Time = 12.9840.
+
