@@ -1,0 +1,25 @@
+# dex-retargeting (https://github.com/dexsuite/dex-retargeting), a second
+# pip-installable retargeting engine we're evaluating alongside
+# AnyDexRetarget (third_party/AnyDexRetarget) and Mingrui-Yu/retargeting
+# (retargeting/). Its "dexpilot" optimizer handles pinch/contact the same
+# way AnyDex's AdaptiveOptimizerAnalytical does (vs. AnyDex's plain
+# KeyVectorOptimizer, which has no notion that two fingertips should stay
+# together during a pinch).
+#
+# Notes:
+# - PyPI name is "dex-retargeting" (import name: dex_retargeting).
+# - Like requirements-anydex.txt, `pin` (pinocchio) and `nlopt` are easiest
+#   installed via conda, not pip, on Windows:
+#     conda install -n <env> -c conda-forge pinocchio nlopt
+# - We only need the optimizer/config API, not its example/demo extras
+#   (mediapipe, opencv-python, sapien, tqdm, tyro, loguru) -- those are
+#   pulled in only by `pip install dex-retargeting[example]`, which we
+#   don't use.
+anytree>=2.12.0
+lxml>=5.2.2
+nlopt>=2.8.0
+numpy>=2.0.0
+pin>=3.3.1
+pytransform3d>=3.5.0
+pyyaml>=6.0.0
+dex-retargeting>=0.5.0
